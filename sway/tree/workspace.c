@@ -1149,6 +1149,11 @@ bool workspace_switch(struct sway_workspace *workspace) {
 	}
 	seat_set_focus(seat, next);
 
+	if (layout_overview_workspaces_enabled() && !root->jumping) {
+		// Re-center the workspaces overview on the newly active workspace
+		layout_overview_workspaces_recompute_scale();
+	}
+
 	// old_ws may not have an output because it is being destroyed if empty
 	if (!layout_overview_workspaces_enabled() && old_ws != workspace && (
 		(old_ws->output && old_ws->output == workspace->output) ||

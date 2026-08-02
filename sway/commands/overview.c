@@ -134,7 +134,7 @@ struct cmd_results *cmd_scale_workspaces(int argc, char **argv) {
 		return error;
 	}
 	bool scale_workspaces = parse_boolean(argv[0], layout_overview_workspaces_enabled());
-	layout_overview_workspaces(scale_workspaces);
+	layout_overview_workspaces(scale_workspaces, true);
 	return cmd_results_new(CMD_SUCCESS, NULL);
 }
 

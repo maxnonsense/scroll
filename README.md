@@ -952,9 +952,10 @@ way to see where things are and move the active focus, or reposition windows.
 scale_workspaces enable|disable|toggle
 ```
 
-This command will create a global overview, where every output will render all
-its workspaces scaled to fit. As in `scale_workspace`, you can still interact
-with the windows normally.
+This command will smoothly zoom out every output, showing its workspaces as a
+vertical strip centered on the focused workspace, with parts of the
+neighboring workspaces visible. As in `scale_workspace`, you can still
+interact with the windows normally.
 
 Example configuration:
 

@@ -122,11 +122,13 @@ static void *scene_node_get_workspace(struct wlr_scene_node *node) {
 static bool scene_workspace_data(struct wlr_scene_node *node, struct wlr_scene_workspace_data *data) {
 	struct sway_workspace *workspace = scene_node_get_workspace(node);
 	if (workspace) {
-		data->x = workspace->jump.x;
-		data->y = workspace->jump.y;
-		data->width = workspace->jump.width;
-		data->height = workspace->jump.height;
-		data->scale = workspace->jump.scale;
+		// Use the animated values; they are equal to the targets when no
+		// overview animation is running.
+		data->x = workspace->jump.anim.x;
+		data->y = workspace->jump.anim.y;
+		data->width = workspace->jump.anim.w;
+		data->height = workspace->jump.anim.h;
+		data->scale = workspace->jump.anim.s;
 		return true;
 	}
 	return false;

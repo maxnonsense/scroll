@@ -66,6 +66,14 @@ struct sway_workspace {
 		double x, y;
 		double width, height;
 		double scale;
+		// Animation state for the workspaces overview. The renderer always
+		// uses the current values, which are interpolated between the start
+		// values and the targets above while an animation is running, and
+		// equal to the targets otherwise.
+		struct {
+			double x0, y0, w0, h0, s0;  // animation start
+			double x, y, w, h, s;       // current (interpolated)
+		} anim;
 		struct wlr_scene_tree *text_tree;
 		struct sway_text_node *text;
 		struct wlr_scene_tree *name_tree;

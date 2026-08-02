@@ -188,6 +188,27 @@ static void arrange_children(list_t *children,
 	}
 }
 
+// niri-style columns: whenever the number of children of a container
+// changes, all the children split the space along the container axis
+// in equal parts, so the column always fits the viewport.
+static void equalize_children(struct sway_container *container) {
+	list_t *children = container->pending.children;
+	if (children->length == container->equalized_nchildren) {
+		return;
+	}
+	container->equalized_nchildren = children->length;
+	const double fraction = 1.0 / children->length;
+	for (int i = 0; i < children->length; ++i) {
+		struct sway_container *child = children->items[i];
+		if (container->pending.layout == L_VERT) {
+			child->height_fraction = fraction;
+		} else {
+			child->width_fraction = fraction;
+		}
+		node_set_dirty(&child->node);
+	}
+}
+
 void arrange_container(struct sway_container *container) {
 	if (config->reloading) {
 		return;
@@ -200,6 +221,7 @@ void arrange_container(struct sway_container *container) {
 	if (container->pending.children->length == 0) {
 		return;
 	}
+	equalize_children(container);
 	struct wlr_box box;
 	workspace_get_box(container->pending.workspace, &box);
 	// Keep workspace width/height because our sizes are a fraction of that,

@@ -386,6 +386,29 @@ bool layout_overview_workspaces_enabled() {
 	return root ? root->overview : false;
 }
 
+// Fraction of the output size the focused workspace occupies in the
+// workspaces overview.
+#define OVERVIEW_WORKSPACES_SCALE 0.6
+
+// True while the workspaces overview is playing its closing animation:
+// root->overview is still true (so the scene keeps rendering every
+// workspace with its overview transform), and the actual teardown is
+// deferred until the animation ends.
+static bool overview_workspaces_disabling = false;
+// Generation counter to detect stale animation end callbacks.
+static uint32_t overview_workspaces_anim_gen = 0;
+
+static void workspace_name_decoration_update_position(struct sway_workspace *ws) {
+	if (!ws->jump.name) {
+		return;
+	}
+	double scale = fmin((double) ws->width / ws->jump.name->width,
+		(double) config->workspace_labels_height / ws->jump.name->height);
+	int x = ws->jump.anim.x + 0.5 * (ws->jump.anim.w - ws->jump.name->width * scale);
+	int y = ws->jump.anim.y - config->workspace_labels_height;
+	wlr_scene_node_set_position(&ws->jump.name_tree->node, x, y);
+}
+
 static void workspace_name_decoration(struct sway_workspace *ws, bool enable) {
 	if (!enable) {
 		if (ws->jump.name) {
@@ -403,99 +426,309 @@ static void workspace_name_decoration(struct sway_workspace *ws, bool enable) {
 	double scale = fmin((double) ws->width / ws->jump.name->width,
 		(double) config->workspace_labels_height / ws->jump.name->height);
 	sway_text_node_scale(ws->jump.name, scale);
-	int x = ws->jump.x + 0.5 * (ws->jump.width - ws->jump.name->width * scale);
-	int y = ws->jump.y - config->workspace_labels_height;
-	wlr_scene_node_set_position(&ws->jump.name_tree->node, x, y);
+	workspace_name_decoration_update_position(ws);
 	wlr_scene_node_set_enabled(&ws->jump.name_tree->node, true);
 }
 
-static void overview_workspaces_recompute_scale(struct sway_output *output) {
+static int overview_workspaces_active_index(struct sway_output *output) {
+	struct sway_workspace *active = output_get_active_workspace(output);
+	int idx = active ? list_find(output->workspaces, active) : -1;
+	return idx >= 0 ? idx : 0;
+}
+
+// Gap (in output pixels, at overview scale) between mini-workspaces in
+// the overview strip. Leaves room for the workspace name labels.
+static double overview_workspaces_gap(struct sway_output *output) {
+	return fmax(2.0 * config->workspace_labels_height,
+		0.04 * output->usable_area.height);
+}
+
+static double overview_workspaces_scale(struct sway_output *output) {
 	const struct wlr_box *usable_area = &output->usable_area;
-	const double left = usable_area->x;
-	const double top = usable_area->y;
+	return OVERVIEW_WORKSPACES_SCALE *
+		fmin((double) usable_area->width / output->width,
+			(double) usable_area->height / output->height);
+}
+
+// Compute the overview targets: a vertical strip of workspaces, all at
+// the same scale, centered on the active workspace of the output so
+// parts of the neighboring workspaces are visible above and below.
+static void overview_workspaces_compute_targets(struct sway_output *output) {
+	const struct wlr_box *usable_area = &output->usable_area;
 	const double width = output->width;
 	const double height = output->height;
-	const int length = output->workspaces->length;
-	const int rows = ceil(sqrt(length));
-	const double scale = fmin((usable_area->width - config->workspace_labels_height * (rows + 1)) / (rows * width),
-		(usable_area->height - config->workspace_labels_height * (rows + 1)) / (rows * height));
-	const int per_row = length / rows;
-	int remain = length % rows;
-	int j = 0;
-	for (int r = 0; r < rows; ++r) {
-		int cols = per_row;
-		if (remain > 0) {
-			++cols;
-			remain--;
+	const double scale = overview_workspaces_scale(output);
+	const double gap = overview_workspaces_gap(output);
+	const int active = overview_workspaces_active_index(output);
+	const double x = usable_area->x + 0.5 * (usable_area->width - scale * width);
+	const double y = usable_area->y + 0.5 * (usable_area->height - scale * height);
+	const double pitch = scale * height + gap;
+	for (int i = 0; i < output->workspaces->length; ++i) {
+		struct sway_workspace *child = output->workspaces->items[i];
+		child->jump.x = round(x);
+		child->jump.y = round(y + (i - active) * pitch);
+		child->jump.width = ceil(scale * width);
+		child->jump.height = ceil(scale * height);
+		child->jump.scale = scale;
+	}
+}
+
+// The "identity" strip: the active workspace exactly covers the output
+// (scale 1), and the other workspaces continue the strip off-screen.
+// This is where the zoom-out animation starts from, and where the
+// zoom-in animation converges to.
+static void overview_workspaces_identity(struct sway_output *output,
+		double *x, double *y, double *w, double *h, double *s, int i) {
+	const int active = overview_workspaces_active_index(output);
+	// Keep the gap proportional to the workspace size so the animation
+	// looks like a uniform zoom of the whole strip.
+	const double gap = overview_workspaces_gap(output) /
+		overview_workspaces_scale(output);
+	*x = 0.0;
+	*y = (i - active) * (output->height + gap);
+	*w = output->width;
+	*h = output->height;
+	*s = 1.0;
+}
+
+// Set the animation start (and current) values to the identity strip.
+static void overview_workspaces_identity_start(struct sway_output *output) {
+	for (int i = 0; i < output->workspaces->length; ++i) {
+		struct sway_workspace *child = output->workspaces->items[i];
+		double x, y, w, h, s;
+		overview_workspaces_identity(output, &x, &y, &w, &h, &s, i);
+		child->jump.anim.x0 = child->jump.anim.x = x;
+		child->jump.anim.y0 = child->jump.anim.y = y;
+		child->jump.anim.w0 = child->jump.anim.w = w;
+		child->jump.anim.h0 = child->jump.anim.h = h;
+		child->jump.anim.s0 = child->jump.anim.s = s;
+	}
+}
+
+// Set the animation targets to the identity strip (used when closing).
+static void overview_workspaces_identity_targets(struct sway_output *output) {
+	for (int i = 0; i < output->workspaces->length; ++i) {
+		struct sway_workspace *child = output->workspaces->items[i];
+		double x, y, w, h, s;
+		overview_workspaces_identity(output, &x, &y, &w, &h, &s, i);
+		child->jump.x = x;
+		child->jump.y = y;
+		child->jump.width = w;
+		child->jump.height = h;
+		child->jump.scale = s;
+	}
+}
+
+// Use the current animation values as the start of a new animation.
+static void overview_workspaces_anim_hold(struct sway_output *output) {
+	for (int i = 0; i < output->workspaces->length; ++i) {
+		struct sway_workspace *child = output->workspaces->items[i];
+		child->jump.anim.x0 = child->jump.anim.x;
+		child->jump.anim.y0 = child->jump.anim.y;
+		child->jump.anim.w0 = child->jump.anim.w;
+		child->jump.anim.h0 = child->jump.anim.h;
+		child->jump.anim.s0 = child->jump.anim.s;
+	}
+}
+
+// Snap the animation values to the targets.
+static void overview_workspaces_anim_snap(struct sway_output *output) {
+	for (int i = 0; i < output->workspaces->length; ++i) {
+		struct sway_workspace *child = output->workspaces->items[i];
+		child->jump.anim.x0 = child->jump.anim.x = child->jump.x;
+		child->jump.anim.y0 = child->jump.anim.y = child->jump.y;
+		child->jump.anim.w0 = child->jump.anim.w = child->jump.width;
+		child->jump.anim.h0 = child->jump.anim.h = child->jump.height;
+		child->jump.anim.s0 = child->jump.anim.s = child->jump.scale;
+		workspace_name_decoration_update_position(child);
+	}
+}
+
+static void overview_workspaces_recompute_scale(struct sway_output *output) {
+	overview_workspaces_compute_targets(output);
+	for (int i = 0; i < output->workspaces->length; ++i) {
+		struct sway_workspace *child = output->workspaces->items[i];
+		wlr_scene_node_reparent(&child->jump.text_tree->node, output->layers.shell_overlay);
+		wlr_scene_node_reparent(&child->jump.name_tree->node, output->layers.shell_overlay);
+		child->layout.fullscreen = child->fullscreen;
+		child->layers.tiling->node.info.workspace = child;
+		node_set_dirty(&child->node);
+		if (child->fullscreen) {
+			container_set_fullscreen(child->fullscreen, FULLSCREEN_NONE);
+			arrange_root();
 		}
-		const double gapx = (usable_area->width - cols * scale * width) / (cols + 1);
-		const double gapy = (usable_area->height - rows * scale * height) / (rows + 1);
-		for (int c = 0; c < cols; ++c) {
-			struct sway_workspace *child = output->workspaces->items[j++];
-			wlr_scene_node_reparent(&child->jump.text_tree->node, output->layers.shell_overlay);
-			wlr_scene_node_reparent(&child->jump.name_tree->node, output->layers.shell_overlay);
-			child->layout.fullscreen = child->fullscreen;
-			child->jump.x = round(left + gapx + c * (scale * width + gapx));
-			child->jump.y = round(top + gapy + r * (scale * height + gapy));
-			child->jump.width = ceil(scale * width);
-			child->jump.height = ceil(scale * height);
-			child->jump.scale = scale;
-			child->layers.tiling->node.info.workspace = child;
-			node_set_dirty(&child->node);
-			if (child->fullscreen) {
-				container_set_fullscreen(child->fullscreen, FULLSCREEN_NONE);
-				arrange_root();
-			}
-			workspace_name_decoration(child, true);
-			for (int f = 0; f < child->floating->length; ++f) {
-				struct sway_container *con = child->floating->items[f];
-				con->scene_tree->node.info.workspace = child;
-			}
+		workspace_name_decoration(child, true);
+		for (int f = 0; f < child->floating->length; ++f) {
+			struct sway_container *con = child->floating->items[f];
+			con->scene_tree->node.info.workspace = child;
 		}
 	}
 	output_damage_whole(output);
+}
+
+// Actually disable the workspaces overview. Called directly when there
+// is no animation, or from the animation end callback.
+static void overview_workspaces_teardown(void) {
+	root->overview = false;
+	overview_workspaces_disabling = false;
+	for (int i = 0; i < root->outputs->length; i++) {
+		struct sway_output *output = root->outputs->items[i];
+		for (int j = 0; j < output->current.workspaces->length; ++j) {
+			struct sway_workspace *child = output->current.workspaces->items[j];
+			workspace_name_decoration(child, false);
+			wlr_scene_node_reparent(&child->jump.text_tree->node, root->staging);
+			wlr_scene_node_reparent(&child->jump.name_tree->node, root->staging);
+			child->layers.tiling->node.info.workspace = NULL;
+			node_set_dirty(&child->node);
+			if (child->layout.fullscreen) {
+				container_set_fullscreen(child->layout.fullscreen, FULLSCREEN_WORKSPACE);
+				arrange_root();
+			}
+			for (int f = 0; f < child->floating->length; ++f) {
+				struct sway_container *con = child->floating->items[f];
+				con->scene_tree->node.info.workspace = NULL;
+			}
+			// Clean-up empty, non-active workspaces when we exit workspaces overview mode
+			workspace_consider_destroy(child);
+		}
+		output_damage_whole(output);
+	}
+}
+
+static void overview_workspaces_anim_end(void *data) {
+	if ((uint32_t)(uintptr_t) data != overview_workspaces_anim_gen) {
+		// A newer overview animation was scheduled since; ignore.
+		return;
+	}
+	for (int i = 0; i < root->outputs->length; i++) {
+		struct sway_output *output = root->outputs->items[i];
+		overview_workspaces_anim_snap(output);
+	}
+	if (overview_workspaces_disabling) {
+		overview_workspaces_teardown();
+		transaction_commit_dirty();
+	}
+	cursor_rebase_all();
+}
+
+static void overview_workspaces_schedule_animation(void) {
+	animation_set_type(ANIMATION_OVERVIEW);
+	struct sway_animation_callbacks *callbacks = animation_get_callbacks();
+	callbacks->callback_end = overview_workspaces_anim_end;
+	callbacks->callback_end_data = (void *)(uintptr_t)(++overview_workspaces_anim_gen);
+	animation_set_callbacks(callbacks);
+}
+
+// Interpolate the overview animation values for the workspaces of an
+// output. Called every animation step from the transaction code.
+void layout_overview_workspaces_animate(struct sway_output *output) {
+	double t, x, y;
+	animation_get_values(&t, &x, &y);
+	for (int i = 0; i < output->current.workspaces->length; ++i) {
+		struct sway_workspace *ws = output->current.workspaces->items[i];
+		bool moving = fabs(ws->jump.x - ws->jump.anim.x0) > 0.5 ||
+			fabs(ws->jump.y - ws->jump.anim.y0) > 0.5 ||
+			fabs(ws->jump.width - ws->jump.anim.w0) > 0.5 ||
+			fabs(ws->jump.height - ws->jump.anim.h0) > 0.5 ||
+			fabs(ws->jump.scale - ws->jump.anim.s0) > 0.0001;
+		if (!moving) {
+			continue;
+		}
+		animation_set_animation_enabled(true);
+		if (t >= 1.0) {
+			ws->jump.anim.x0 = ws->jump.anim.x = ws->jump.x;
+			ws->jump.anim.y0 = ws->jump.anim.y = ws->jump.y;
+			ws->jump.anim.w0 = ws->jump.anim.w = ws->jump.width;
+			ws->jump.anim.h0 = ws->jump.anim.h = ws->jump.height;
+			ws->jump.anim.s0 = ws->jump.anim.s = ws->jump.scale;
+		} else {
+			ws->jump.anim.x = linear_scale(ws->jump.anim.x0, ws->jump.x, t);
+			ws->jump.anim.y = linear_scale(ws->jump.anim.y0, ws->jump.y, t);
+			ws->jump.anim.w = linear_scale(ws->jump.anim.w0, ws->jump.width, t);
+			ws->jump.anim.h = linear_scale(ws->jump.anim.h0, ws->jump.height, t);
+			ws->jump.anim.s = linear_scale(ws->jump.anim.s0, ws->jump.scale, t);
+		}
+		workspace_name_decoration_update_position(ws);
+	}
 }
 
 void layout_overview_workspaces_recompute_scale() {
 	if (!layout_overview_workspaces_enabled()) {
 		return;
 	}
+	if (overview_workspaces_disabling) {
+		// Closing animation in progress; keep converging to identity.
+		return;
+	}
+	bool animate = !root->jumping && animation_path_enabled(ANIMATION_OVERVIEW);
 	for (int i = 0; i < root->outputs->length; i++) {
 		struct sway_output *output = root->outputs->items[i];
+		overview_workspaces_anim_hold(output);
 		overview_workspaces_recompute_scale(output);
+		if (!animate) {
+			overview_workspaces_anim_snap(output);
+		}
+	}
+	if (animate) {
+		overview_workspaces_schedule_animation();
 	}
 }
 
-void layout_overview_workspaces(bool on) {
-	if ((root->overview && on) || (!root->overview && !on)) {
-		return;
-	}
-	root->overview = !root->overview;
-	for (int i = 0; i < root->outputs->length; i++) {
-		struct sway_output *output = root->outputs->items[i];
-		if (layout_overview_workspaces_enabled()) {
+void layout_overview_workspaces(bool on, bool animate) {
+	animate = animate && !root->jumping &&
+		animation_path_enabled(ANIMATION_OVERVIEW);
+	if (on) {
+		if (root->overview && !overview_workspaces_disabling) {
+			return;
+		}
+		const bool entering = !root->overview;
+		root->overview = true;
+		overview_workspaces_disabling = false;
+		for (int i = 0; i < root->outputs->length; i++) {
+			struct sway_output *output = root->outputs->items[i];
+			if (entering) {
+				overview_workspaces_identity_start(output);
+			} else {
+				// Cancel the closing animation: continue from wherever it is.
+				overview_workspaces_anim_hold(output);
+			}
 			overview_workspaces_recompute_scale(output);
-		} else {
-			for (int j = 0; j < output->current.workspaces->length; ++j) {
-				struct sway_workspace *child = output->current.workspaces->items[j];
-				workspace_name_decoration(child, false);
-				wlr_scene_node_reparent(&child->jump.text_tree->node, root->staging);
-				wlr_scene_node_reparent(&child->jump.name_tree->node, root->staging);
-				child->layers.tiling->node.info.workspace = NULL;
+			if (!animate) {
+				overview_workspaces_anim_snap(output);
+			}
+		}
+		if (animate) {
+			overview_workspaces_schedule_animation();
+		}
+	} else {
+		if (!root->overview) {
+			return;
+		}
+		if (overview_workspaces_disabling) {
+			if (!animate) {
+				// Force an immediate teardown.
+				++overview_workspaces_anim_gen;
+				overview_workspaces_teardown();
+			}
+			return;
+		}
+		if (!animate) {
+			++overview_workspaces_anim_gen;
+			overview_workspaces_teardown();
+			return;
+		}
+		overview_workspaces_disabling = true;
+		for (int i = 0; i < root->outputs->length; i++) {
+			struct sway_output *output = root->outputs->items[i];
+			overview_workspaces_anim_hold(output);
+			overview_workspaces_identity_targets(output);
+			for (int j = 0; j < output->workspaces->length; ++j) {
+				struct sway_workspace *child = output->workspaces->items[j];
 				node_set_dirty(&child->node);
-				if (child->layout.fullscreen) {
-					container_set_fullscreen(child->layout.fullscreen, FULLSCREEN_WORKSPACE);
-					arrange_root();
-				}
-				for (int f = 0; f < child->floating->length; ++f) {
-					struct sway_container *con = child->floating->items[f];
-					con->scene_tree->node.info.workspace = NULL;
-				}
-				// Clean-up empty, non-active workspaces when we exit workspaces overview mode
-				workspace_consider_destroy(child);
 			}
 			output_damage_whole(output);
 		}
+		overview_workspaces_schedule_animation();
 	}
 }
 
@@ -2696,7 +2929,7 @@ static void jump_handle_keyboard_key_end(void *data) {
 		focused = seat_get_focused_container(seat);
 	}
 
-	layout_overview_workspaces(jump_data->overview_workspaces);
+	layout_overview_workspaces(jump_data->overview_workspaces, false);
 	list_free_items_and_destroy(jump_data->workspace_data);
 	root_filters_destroy(root, jump_data->root_filters);
 	node_set_dirty(&root->node);
@@ -2803,7 +3036,7 @@ static void jump(bool overview_workspaces, enum sway_layout_filter filter,
 		jump_data->old_focus = false;
 	}
 	jump_data->overview_workspaces = layout_overview_workspaces_enabled();
-	layout_overview_workspaces(overview_workspaces);
+	layout_overview_workspaces(overview_workspaces, false);
 
 	if (jump_data->jump_root_prepare) {
 		jump_data->jump_root_prepare(jump_data);
@@ -2818,7 +3051,7 @@ static void jump(bool overview_workspaces, enum sway_layout_filter filter,
 	jump_for_each_view(jump_add_windows, jump_data);
 
 	if (jump_data->nwindows == 0) {
-		layout_overview_workspaces(jump_data->overview_workspaces);
+		layout_overview_workspaces(jump_data->overview_workspaces, false);
 		if (jump_data->jump_root_restore) {
 			jump_data->jump_root_restore(jump_data);
 		}
@@ -2962,7 +3195,7 @@ static void jump_workspaces_handle_keyboard_key_end(void *data) {
 			seat_set_focus_container(seat, old_focus);
 		}
 	}
-	layout_overview_workspaces(jump_data->overview_workspaces);
+	layout_overview_workspaces(jump_data->overview_workspaces, false);
 
 	root->jumping = false;
 	free(jump_data);
@@ -3008,7 +3241,7 @@ void layout_jump_workspaces() {
 		return;
 	}
 	bool overview_workspaces = layout_overview_workspaces_enabled();
-	layout_overview_workspaces(true);
+	layout_overview_workspaces(true, false);
 
 	struct jump_data *jump_data = calloc(1, sizeof(struct jump_data));
 
@@ -3019,7 +3252,7 @@ void layout_jump_workspaces() {
 	}
 	if (nworkspaces == 0) {
 		free(jump_data);
-		layout_overview_workspaces(overview_workspaces);
+		layout_overview_workspaces(overview_workspaces, false);
 		transaction_commit_dirty();
 		return;
 	}

@@ -176,7 +176,14 @@ void layout_overview_recompute_scale(struct sway_workspace *workspace);
 enum sway_layout_overview layout_overview_mode(struct sway_workspace *workspace);
 
 bool layout_overview_workspaces_enabled();
-void layout_overview_workspaces(bool on);
+// Toggle the workspaces overview. If animate is true (and animations are
+// enabled and we are not jumping), the toggle is animated as a smooth
+// zoom centered on the active workspace.
+void layout_overview_workspaces(bool on, bool animate);
+// Interpolate the overview animation values for the workspaces of an
+// output. Called from the animation step of the transaction code.
+struct sway_output;
+void layout_overview_workspaces_animate(struct sway_output *output);
 bool layout_overview_workspaces_map_coordinates(struct sway_workspace **workspace, double *lx, double *ly);
 void layout_overview_workspaces_global_to_local(struct sway_workspace *workspace, double *lx, double *ly);
 void layout_overview_workspaces_local_to_global(struct sway_workspace *workspace, double *lx, double *ly);

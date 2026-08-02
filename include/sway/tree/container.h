@@ -165,6 +165,11 @@ struct sway_container {
 	double width_fraction;
 	double height_fraction;
 
+	// Number of children this container had the last time its children
+	// were equalized. When the number of children changes, the children
+	// split the container axis space equally (niri-style columns).
+	int equalized_nchildren;
+
 	struct {
 		bool single;
 		enum sway_toggle_size_state state;

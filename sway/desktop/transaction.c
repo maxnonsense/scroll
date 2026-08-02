@@ -1530,6 +1530,11 @@ static void arrange_output(struct sway_output *output) {
 static void animate_output(struct sway_output *output) {
 	animate_layers(output);
 
+	if (layout_overview_workspaces_enabled()) {
+		// Interpolate the workspaces overview zoom for this output
+		layout_overview_workspaces_animate(output);
+	}
+
 	for (int i = 0; i < output->current.workspaces->length; i++) {
 		struct sway_workspace *child = output->current.workspaces->items[i];
 
