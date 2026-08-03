@@ -1924,23 +1924,25 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 		// node->visible is computed against the untransformed output
 		// viewport, but in the workspaces overview content scrolled out of
 		// the viewport becomes visible: use the full node extent instead.
+		// Build the region with exactly the same rounding as dst_fbox below,
+		// or thin decorations (borders) at the right and bottom edges of the
+		// node would be clipped away by rounding mismatches.
 		double node_width, node_height;
 		scene_node_get_size(node, &node_width, &node_height);
-		int bx = round(entry->x), by = round(entry->y);
+		const int bx = ceil((entry->x - data->logical.x) * scale + dx);
+		const int by = ceil((entry->y - data->logical.y) * scale + dy);
 		pixman_region32_union_rect(&render_region, &render_region, bx, by,
-			round(entry->x + node_width) - bx, round(entry->y + node_height) - by);
-	} else {
-		pixman_region32_copy(&render_region, &node->visible);
-	}
-	pixman_region32_translate(&render_region, -data->logical.x, -data->logical.y);
-	if (workspace) {
-		scale_region(&render_region, scale, false);
-		pixman_region32_translate(&render_region, dx, dy);
+			ceil(node_width * scale), ceil(node_height * scale));
 		// Clip vertically against the "mini-workspace"; horizontally allow
 		// the full output, so windows scrolled out of the viewport show at
-		// the sides of the mini-workspace.
+		// the sides of the mini-workspace. Allow one extra pixel at the
+		// bottom: the ceil-rounded node boxes can exceed the mini-workspace
+		// box by one pixel, and the border of the bottom window with it.
 		pixman_region32_intersect_rect(&render_region, &render_region, 0, dy,
-			data->logical.width, workspace_data.height);
+			data->logical.width, workspace_data.height + 1);
+	} else {
+		pixman_region32_copy(&render_region, &node->visible);
+		pixman_region32_translate(&render_region, -data->logical.x, -data->logical.y);
 	}
 	logical_to_buffer_coords(&render_region, data, true);
 	pixman_region32_intersect(&render_region, &render_region, &data->damage);
