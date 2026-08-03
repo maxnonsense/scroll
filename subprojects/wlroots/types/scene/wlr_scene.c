@@ -1920,14 +1920,27 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 
 	pixman_region32_t render_region;
 	pixman_region32_init(&render_region);
-	pixman_region32_copy(&render_region, &node->visible);
+	if (workspace) {
+		// node->visible is computed against the untransformed output
+		// viewport, but in the workspaces overview content scrolled out of
+		// the viewport becomes visible: use the full node extent instead.
+		double node_width, node_height;
+		scene_node_get_size(node, &node_width, &node_height);
+		int bx = round(entry->x), by = round(entry->y);
+		pixman_region32_union_rect(&render_region, &render_region, bx, by,
+			round(entry->x + node_width) - bx, round(entry->y + node_height) - by);
+	} else {
+		pixman_region32_copy(&render_region, &node->visible);
+	}
 	pixman_region32_translate(&render_region, -data->logical.x, -data->logical.y);
 	if (workspace) {
 		scale_region(&render_region, scale, false);
 		pixman_region32_translate(&render_region, dx, dy);
-		// Clip against "mini-workspace"
-		pixman_region32_intersect_rect(&render_region, &render_region, dx, dy,
-			workspace_data.width, workspace_data.height);
+		// Clip vertically against the "mini-workspace"; horizontally allow
+		// the full output, so windows scrolled out of the viewport show at
+		// the sides of the mini-workspace.
+		pixman_region32_intersect_rect(&render_region, &render_region, 0, dy,
+			data->logical.width, workspace_data.height);
 	}
 	logical_to_buffer_coords(&render_region, data, true);
 	pixman_region32_intersect(&render_region, &render_region, &data->damage);
@@ -1957,8 +1970,8 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 	if (workspace) {
 		scale_region(&opaque, scale, false);
 		pixman_region32_translate(&opaque, dx, dy);
-		pixman_region32_intersect_rect(&opaque, &opaque, dx, dy,
-			workspace_data.width, workspace_data.height);
+		pixman_region32_intersect_rect(&opaque, &opaque, 0, dy,
+			data->logical.width, workspace_data.height);
 	}
 	logical_to_buffer_coords(&opaque, data, false);
 	pixman_region32_subtract(&opaque, &render_region, &opaque);
@@ -2525,6 +2538,9 @@ struct render_list_constructor_data {
 	bool calculate_visibility;
 	bool highlight_transparent_region;
 	bool fractional_scale;
+	// Output being rendered; used to filter workspace nodes belonging to
+	// other outputs when the workspaces overview is enabled.
+	struct wlr_output *output;
 };
 
 static bool scene_buffer_is_black_opaque(struct wlr_scene_buffer *scene_buffer) {
@@ -2542,6 +2558,31 @@ static bool construct_render_list_iterator(struct wlr_scene_node *node,
 
 	if (scene_node_invisible(node)) {
 		return false;
+	}
+
+	if (scene_cbs.overview_workspaces_enabled()) {
+		struct wlr_scene_workspace_data workspace_data;
+		if (scene_cbs.workspace_data(node, &workspace_data)) {
+			// Workspace nodes are transformed at render time in the
+			// workspaces overview, so content scrolled out of the viewport
+			// becomes visible: don't cull them by their untransformed
+			// geometry or visibility, but skip nodes belonging to other
+			// outputs.
+			struct wlr_output *node_output = wlr_scene_node_info_get_output(node);
+			if (node_output != NULL && node_output != data->output) {
+				return false;
+			}
+			struct render_list_entry *entry = wl_array_add(data->render_list, sizeof(*entry));
+			if (entry) {
+				*entry = (struct render_list_entry){
+					.node = node,
+					.x = lx,
+					.y = ly,
+					.highlight_transparent_region = data->highlight_transparent_region,
+				};
+			}
+			return false;
+		}
 	}
 
 	// While rendering, the background should always be black. If we see a
@@ -3010,10 +3051,23 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 		.calculate_visibility = scene_output->scene->calculate_visibility,
 		.highlight_transparent_region = scene_output->scene->highlight_transparent_region,
 		.fractional_scale = floor(render_data.scale) != render_data.scale,
+		.output = output,
 	};
 
+	struct wlr_box enum_box = list_con.box;
+	if (scene_cbs.overview_workspaces_enabled()) {
+		// In the workspaces overview, workspace content is scaled down at
+		// render time, so nodes far outside the output at their untransformed
+		// coordinates can become visible. Expand the enumeration box so they
+		// are considered; the iterator filters out other outputs' nodes.
+		enum_box.x -= 4 * list_con.box.width;
+		enum_box.width += 8 * list_con.box.width;
+		enum_box.y -= 4 * list_con.box.height;
+		enum_box.height += 8 * list_con.box.height;
+	}
+
 	list_con.render_list->size = 0;
-	scene_nodes_in_box(&scene_output->scene->tree.node, &list_con.box,
+	scene_nodes_in_box(&scene_output->scene->tree.node, &enum_box,
 		construct_render_list_iterator, &list_con);
 	array_realloc(list_con.render_list, list_con.render_list->size);
 

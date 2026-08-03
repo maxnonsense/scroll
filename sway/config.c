@@ -277,6 +277,8 @@ static void config_defaults(struct sway_config *config) {
 	color_to_rgba(config->workspace_labels_color, 0xA54242FF);
 	color_to_rgba(config->workspace_labels_background, 0x00000000);
 	config->workspace_labels_height = 30;
+	config->scale_workspaces_labels = true;
+	config->scale_workspaces_gap = -1;
 	config->fullscreen_movefocus = FULLSCREEN_MOVEFOCUS_NOFOLLOW;
 	config->fullscreen_on_request = FULLSCREEN_REQUEST_DEFAULT;
 	config->align_reset_auto = true;

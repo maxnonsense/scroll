@@ -439,6 +439,13 @@ static int overview_workspaces_active_index(struct sway_output *output) {
 // Gap (in output pixels, at overview scale) between mini-workspaces in
 // the overview strip. Leaves room for the workspace name labels.
 static double overview_workspaces_gap(struct sway_output *output) {
+	if (config->scale_workspaces_gap >= 0) {
+		return config->scale_workspaces_gap;
+	}
+	if (!config->scale_workspaces_labels) {
+		return fmax(0.5 * config->workspace_labels_height,
+			0.02 * output->usable_area.height);
+	}
 	return fmax(2.0 * config->workspace_labels_height,
 		0.04 * output->usable_area.height);
 }
@@ -557,10 +564,11 @@ static void overview_workspaces_recompute_scale(struct sway_output *output) {
 			container_set_fullscreen(child->fullscreen, FULLSCREEN_NONE);
 			arrange_root();
 		}
-		workspace_name_decoration(child, true);
+		workspace_name_decoration(child, config->scale_workspaces_labels);
 		for (int f = 0; f < child->floating->length; ++f) {
 			struct sway_container *con = child->floating->items[f];
 			con->scene_tree->node.info.workspace = child;
+			con->scene_tree->node.info.wlr_output = output->wlr_output;
 		}
 	}
 	output_damage_whole(output);
@@ -587,6 +595,7 @@ static void overview_workspaces_teardown(void) {
 			for (int f = 0; f < child->floating->length; ++f) {
 				struct sway_container *con = child->floating->items[f];
 				con->scene_tree->node.info.workspace = NULL;
+				con->scene_tree->node.info.wlr_output = NULL;
 			}
 			// Clean-up empty, non-active workspaces when we exit workspaces overview mode
 			workspace_consider_destroy(child);
@@ -742,7 +751,10 @@ bool layout_overview_workspaces_map_coordinates(struct sway_workspace **workspac
 		const double y = *ly - output->ly;
 		for (int j = 0; j < output->workspaces->length; ++j) {
 			struct sway_workspace *child = output->workspaces->items[j];
-			if (x >= child->jump.x && x < child->jump.x + child->jump.width &&
+			// Accept the full output width: windows scrolled out of the
+			// viewport are visible at the sides of the mini-workspace, and
+			// the linear mapping extends to them.
+			if (x >= 0 && x < output->width &&
 				y >= child->jump.y && y < child->jump.y + child->jump.height) {
 				const double rx = (x - child->jump.x) / child->jump.width * output->width;
 				const double ry = (y - child->jump.y) / child->jump.height * output->height;
@@ -1892,11 +1904,22 @@ static bool layout_move_container_mode(struct sway_container *container, enum sw
 }
 
 bool layout_move_container(struct sway_container *container, enum sway_layout_direction dir, bool nomode) {
+	bool moved;
 	if (nomode) {
-		return layout_move_container_nomode(container, dir);
+		moved = layout_move_container_nomode(container, dir);
 	} else {
-		return layout_move_container_mode(container, dir);
+		moved = layout_move_container_mode(container, dir);
 	}
+	if (moved) {
+		// Keep the moved container above its siblings while the movement
+		// animation plays, so it doesn't slide underneath other windows.
+		wlr_scene_node_raise_to_top(&container->scene_tree->node);
+		struct sway_container *parent = container->pending.parent;
+		if (parent) {
+			wlr_scene_node_raise_to_top(&parent->scene_tree->node);
+		}
+	}
+	return moved;
 }
 
 static void switch_workspace(struct sway_workspace *workspace) {
@@ -3218,9 +3241,9 @@ static bool jump_workspaces_handle_button(struct sway_seat *seat, uint32_t time_
 			for (int j = 0; j < output->current.workspaces->length; ++j) {
 				struct sway_workspace *child = output->current.workspaces->items[j];
 				// If this workspace is the one under the cursor, set focused
-				// and jump_data->window_number to n
-				if (x >= child->jump.x &&
-					x <= child->jump.x + child->jump.width &&
+				// and jump_data->window_number to n. The full output width
+				// belongs to the workspace row.
+				if (x >= 0 && x <= oscale * output->width &&
 					y >= child->jump.y &&
 					y <= child->jump.y + child->jump.height) {
 					focus = true;

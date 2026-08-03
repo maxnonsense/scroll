@@ -860,6 +860,15 @@ set|plus|minus|toggle <amount>
 	you will be able to interact with the windows normally. The overview
 	re-centers when the focused workspace changes.
 
+*scale_workspaces_labels* yes|no
+	Show the name of each workspace above it while in the *scale_workspaces*
+	overview. Default is _yes_.
+
+*scale_workspaces_gap* <px>
+	Gap (in pixels) between workspaces in the *scale_workspaces* overview.
+	By default it is computed from the workspace label height and the size
+	of the output.
+
 *scratchpad* show|jump
 	_show_ shows a window from the scratchpad. Repeatedly using this command will
 	cycle through the windows in the scratchpad.

@@ -957,6 +957,10 @@ vertical strip centered on the focused workspace, with parts of the
 neighboring workspaces visible. As in `scale_workspace`, you can still
 interact with the windows normally.
 
+`scale_workspaces_labels yes|no` shows or hides the workspace name labels in
+the overview (default `yes`), and `scale_workspaces_gap <px>` sets the gap in
+pixels between the workspaces (computed automatically by default).
+
 Example configuration:
 
 ``` config

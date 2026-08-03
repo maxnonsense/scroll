@@ -625,6 +625,9 @@ struct sway_config {
 	float workspace_labels_color[4];
 	float workspace_labels_background[4];
 	int workspace_labels_height;
+	// Workspaces overview (scale_workspaces) options
+	bool scale_workspaces_labels;
+	int scale_workspaces_gap; // gap between workspaces in pixels, < 0 for auto
 	enum sway_fullscreen_movefocus fullscreen_movefocus;
 	enum sway_fullscreen_request_mode fullscreen_on_request;
 	bool align_reset_auto;

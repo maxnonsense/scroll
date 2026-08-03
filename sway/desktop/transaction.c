@@ -1523,6 +1523,20 @@ static void arrange_output(struct sway_output *output) {
 			wlr_scene_node_set_enabled(&child->layers.fullscreen->node, false);
 
 			disable_workspace(child);
+
+			// Keep the geometry of hidden workspaces up to date (the scene
+			// nodes stay disabled), so windows moved to them are already in
+			// place when switching there instead of animating into position
+			// after the switch.
+			if (!child->current.fullscreen) {
+				struct wlr_box *area = workspace_get_output_usable_area(child);
+				struct side_gaps *gaps = &child->current_gaps;
+				wlr_scene_node_set_position(&child->layers.tiling->node,
+					gaps->left + area->x, gaps->top + area->y);
+				arrange_workspace_tiling(child,
+					area->width - gaps->left - gaps->right,
+					area->height - gaps->top - gaps->bottom);
+			}
 		}
 	}
 }

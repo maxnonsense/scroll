@@ -137,3 +137,71 @@ def test_scale_workspaces_toggle(scroll_compositor: ScrollInstance) -> None:
             assert res and res[0]["success"]
         inst.wait_for_idle()
         assert inst.proc.poll() is None, "Compositor crashed in rapid toggling"
+
+
+def _view_rect(tree: dict, title: str) -> dict:
+    node = _find_view_by_title(tree, title)
+    assert node is not None, f"view {title} not found in tree"
+    return node["rect"]
+
+
+def test_move_to_hidden_workspace_in_place(scroll_compositor: ScrollInstance) -> None:
+    """A window moved to a non-visible workspace is arranged there
+    immediately: its geometry must not change when we switch to that
+    workspace."""
+    inst = scroll_compositor
+    with wayland_client(inst, "w1"):
+        wait_for_client_map(inst, "w1")
+        inst.wait_for_idle()
+
+        with wayland_client(inst, "w2"):
+            wait_for_client_map(inst, "w2")
+            inst.wait_for_idle()
+
+            res = inst.cmd("move container to workspace 2")
+            assert res and res[0]["success"], f"Command failed: {res}"
+            inst.wait_for_idle()
+
+            # The window is on the (hidden) workspace 2 and should already
+            # have its final geometry
+            before = _view_rect(inst.get_tree(), "w2")
+
+            res = inst.cmd("workspace 2")
+            assert res and res[0]["success"]
+            inst.wait_for_idle()
+
+            after = _view_rect(inst.get_tree(), "w2")
+            assert before == after, (
+                f"window moved when switching workspace: {before} != {after}"
+            )
+
+
+def test_scale_workspaces_options(scroll_compositor: ScrollInstance) -> None:
+    """scale_workspaces_labels and scale_workspaces_gap are accepted and
+    the overview works with them."""
+    inst = scroll_compositor
+    with wayland_client(inst, "w1"):
+        wait_for_client_map(inst, "w1")
+        inst.wait_for_idle()
+
+        res = inst.cmd("scale_workspaces_labels no")
+        assert res and res[0]["success"], f"Command failed: {res}"
+        res = inst.cmd("scale_workspaces_gap 10")
+        assert res and res[0]["success"], f"Command failed: {res}"
+        res = inst.cmd("scale_workspaces_gap -5")
+        assert res and not res[0]["success"], "negative gap must be rejected"
+
+        res = inst.cmd("scale_workspaces enable")
+        assert res and res[0]["success"]
+        inst.wait_for_idle()
+        assert inst.proc.poll() is None, "Compositor crashed in overview"
+
+        # Toggling labels while the overview is active recomputes it
+        res = inst.cmd("scale_workspaces_labels yes")
+        assert res and res[0]["success"]
+        inst.wait_for_idle()
+
+        res = inst.cmd("scale_workspaces disable")
+        assert res and res[0]["success"]
+        inst.wait_for_idle()
+        assert inst.proc.poll() is None, "Compositor crashed leaving overview"

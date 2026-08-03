@@ -95,6 +95,8 @@ static const struct cmd_handler handlers[] = {
 	{ "no_focus", cmd_no_focus },
 	{ "output", cmd_output },
 	{ "popup_during_fullscreen", cmd_popup_during_fullscreen },
+	{ "scale_workspaces_gap", cmd_scale_workspaces_gap },
+	{ "scale_workspaces_labels", cmd_scale_workspaces_labels },
 	{ "seat", cmd_seat },
 	{ "send_shortcut", cmd_send_shortcut },
 	{ "set", cmd_set },

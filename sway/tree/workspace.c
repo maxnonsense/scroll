@@ -1378,6 +1378,8 @@ void workspace_add_floating(struct sway_workspace *workspace,
 	con->pending.workspace = workspace;
 	if (layout_overview_workspaces_enabled()) {
 		con->scene_tree->node.info.workspace = workspace;
+		con->scene_tree->node.info.wlr_output =
+			workspace->output ? workspace->output->wlr_output : NULL;
 	}
 	container_for_each_child(con, set_workspace, NULL);
 	container_handle_fullscreen_reparent(con);
