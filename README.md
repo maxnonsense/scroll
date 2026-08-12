@@ -961,6 +961,18 @@ interact with the windows normally.
 the overview (default `yes`), and `scale_workspaces_gap <px>` sets the gap in
 pixels between the workspaces (computed automatically by default).
 
+### Hot corners
+
+`hot_corner <top_left|top_right|bottom_left|bottom_right> <command|none>`
+executes any scroll command when the cursor enters that corner of an output.
+It triggers once when entering the corner and re-arms when leaving it, and
+works in both the normal view and the `scale_workspaces` overview.
+`hot_corner_size <px>` sets the size of the trigger area (default 10).
+
+``` config
+    hot_corner top_left scale_workspaces toggle
+```
+
 Example configuration:
 
 ``` config

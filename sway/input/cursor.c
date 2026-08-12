@@ -157,6 +157,13 @@ struct sway_node *node_at_coords(
 	}
 
 	// if we aren't on a container, determine what workspace we are on
+	if (workspace) {
+		// In the workspaces overview, the workspace was already resolved
+		// when mapping the coordinates; lx/ly are workspace-local now, so
+		// they cannot be compared against the overview boxes anymore.
+		return &workspace->node;
+	}
+
 	struct wlr_output *wlr_output = wlr_output_layout_output_at(
 			root->output_layout, lx, ly);
 	if (wlr_output == NULL) {
@@ -169,24 +176,7 @@ struct sway_node *node_at_coords(
 		return NULL;
 	}
 
-	struct sway_workspace *ws = NULL;
-	if (layout_overview_workspaces_enabled()) {
-		const double x = lx - output->lx;
-		const double y = ly - output->ly;
-		for (int j = 0; j < output->workspaces->length; ++j) {
-			struct sway_workspace *child = output->workspaces->items[j];
-			// The full output width belongs to the workspace row: windows
-			// scrolled out of the viewport show at the sides of the
-			// mini-workspace.
-			if (x >= 0 && x < output->width &&
-				y >= child->jump.y && y < child->jump.y + child->jump.height) {
-				ws = child;
-				break;
-			}
-		}
-	} else {
-		ws = output_get_active_workspace(output);
-	}
+	struct sway_workspace *ws = output_get_active_workspace(output);
 	if (!ws) {
 		return NULL;
 	}
@@ -352,6 +342,68 @@ void cursor_unhide(struct sway_cursor *cursor) {
 	wl_event_source_timer_update(cursor->hide_source, cursor_get_timeout(cursor));
 }
 
+// Check if the cursor entered one of the output corners and execute the
+// configured hot corner command. The command triggers when the cursor
+// enters the corner area, and re-arms when it leaves it. Hot corners
+// work in both the normal view and the workspaces overview, since they
+// use the raw cursor position on the output.
+void cursor_check_hot_corners(struct sway_cursor *cursor) {
+	struct wlr_output *wlr_output = wlr_output_layout_output_at(
+		root->output_layout, cursor->cursor->x, cursor->cursor->y);
+	if (wlr_output == NULL) {
+		cursor->hot_corner = -1;
+		return;
+	}
+	struct sway_output *output = wlr_output->data;
+	if (!output || !output->enabled) {
+		cursor->hot_corner = -1;
+		return;
+	}
+	const double x = cursor->cursor->x - output->lx;
+	const double y = cursor->cursor->y - output->ly;
+	const int size = config->hot_corner_size;
+	const bool left = x < size;
+	const bool right = x >= output->width - size;
+	const bool top = y < size;
+	const bool bottom = y >= output->height - size;
+	int corner = -1;
+	if (top && left) {
+		corner = HOT_CORNER_TOP_LEFT;
+	} else if (top && right) {
+		corner = HOT_CORNER_TOP_RIGHT;
+	} else if (bottom && right) {
+		corner = HOT_CORNER_BOTTOM_RIGHT;
+	} else if (bottom && left) {
+		corner = HOT_CORNER_BOTTOM_LEFT;
+	}
+	if (corner == cursor->hot_corner) {
+		return;
+	}
+	cursor->hot_corner = corner;
+	if (corner < 0 || !config->hot_corners[corner] || !config->active ||
+			root->jumping || !seatop_allows_set_cursor(cursor->seat)) {
+		return;
+	}
+	// Copy the command: executing it may modify the configuration
+	char *command = strdup(config->hot_corners[corner]);
+	if (!command) {
+		return;
+	}
+	sway_log(SWAY_DEBUG, "running hot corner command: %s", command);
+	list_t *res_list = execute_command(command, cursor->seat, NULL);
+	for (int i = 0; i < res_list->length; ++i) {
+		struct cmd_results *results = res_list->items[i];
+		if (results->status != CMD_SUCCESS) {
+			sway_log(SWAY_ERROR, "could not run hot corner command: %s (%s)",
+				command, results->error);
+		}
+		free_cmd_results(results);
+	}
+	list_free(res_list);
+	free(command);
+	transaction_commit_dirty();
+}
+
 void pointer_motion(struct sway_cursor *cursor, uint32_t time_msec,
 		struct wlr_input_device *device, double dx, double dy,
 		double dx_unaccel, double dy_unaccel) {
@@ -384,6 +436,8 @@ void pointer_motion(struct sway_cursor *cursor, uint32_t time_msec,
 	wlr_cursor_move(cursor->cursor, device, dx, dy);
 
 	seatop_pointer_motion(cursor->seat, time_msec);
+
+	cursor_check_hot_corners(cursor);
 }
 
 static void handle_pointer_motion_relative(
@@ -1135,6 +1189,7 @@ struct sway_cursor *sway_cursor_create(struct sway_seat *seat) {
 
 	cursor->previous.x = wlr_cursor->x;
 	cursor->previous.y = wlr_cursor->y;
+	cursor->hot_corner = -1;
 
 	cursor->seat = seat;
 	wlr_cursor_attach_output_layout(wlr_cursor, root->output_layout);

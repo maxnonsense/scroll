@@ -205,3 +205,111 @@ def test_scale_workspaces_options(scroll_compositor: ScrollInstance) -> None:
         assert res and res[0]["success"]
         inst.wait_for_idle()
         assert inst.proc.poll() is None, "Compositor crashed leaving overview"
+
+
+def test_hot_corner_commands(scroll_compositor: ScrollInstance) -> None:
+    """hot_corner and hot_corner_size configuration commands."""
+    inst = scroll_compositor
+    for corner in ("top_left", "top-right", "bottom_left", "bottomright"):
+        res = inst.cmd(f"hot_corner {corner} scale_workspaces toggle")
+        assert res and res[0]["success"], f"Command failed: {res}"
+
+    res = inst.cmd("hot_corner top_left none")
+    assert res and res[0]["success"], f"Command failed: {res}"
+
+    res = inst.cmd("hot_corner middle exec true")
+    assert res and not res[0]["success"], "invalid corner must be rejected"
+
+    res = inst.cmd("hot_corner_size 5")
+    assert res and res[0]["success"], f"Command failed: {res}"
+    res = inst.cmd("hot_corner_size 0")
+    assert res and not res[0]["success"], "invalid size must be rejected"
+    assert inst.proc.poll() is None
+
+
+def _focused_workspace_name(tree: dict) -> str | None:
+    def walk(node, ws):
+        if node.get("type") == "workspace":
+            ws = node.get("name")
+        if node.get("focused"):
+            return ws
+        for key in ("nodes", "floating_nodes"):
+            for child in node.get(key, []):
+                found = walk(child, ws)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(tree, None)
+
+
+def test_hot_corner_trigger(scroll_compositor: ScrollInstance) -> None:
+    """Entering an output corner runs the configured command, once per
+    entry, re-arming when the cursor leaves the corner."""
+    inst = scroll_compositor
+    res = inst.cmd("hot_corner top_left workspace 7")
+    assert res and res[0]["success"], f"Command failed: {res}"
+
+    # Start away from the corner
+    inst.cmd("seat - cursor set 640 360")
+    inst.wait_for_idle()
+    assert _focused_workspace_name(inst.get_tree()) == "1"
+
+    # Enter the corner: the command runs
+    inst.cmd("seat - cursor set 0 0")
+    inst.wait_for_idle()
+    assert _focused_workspace_name(inst.get_tree()) == "7"
+
+    # Still inside the corner: must not re-trigger
+    res = inst.cmd("workspace 1")
+    assert res and res[0]["success"]
+    inst.cmd("seat - cursor set 3 3")
+    inst.wait_for_idle()
+    assert _focused_workspace_name(inst.get_tree()) == "1"
+
+    # Leave and re-enter: triggers again
+    inst.cmd("seat - cursor set 640 360")
+    inst.cmd("seat - cursor set 2 2")
+    inst.wait_for_idle()
+    assert _focused_workspace_name(inst.get_tree()) == "7"
+
+    # Removing the hot corner disables it
+    res = inst.cmd("hot_corner top_left none")
+    assert res and res[0]["success"]
+    inst.cmd("workspace 1")
+    inst.cmd("seat - cursor set 640 360")
+    inst.cmd("seat - cursor set 0 0")
+    inst.wait_for_idle()
+    assert _focused_workspace_name(inst.get_tree()) == "1"
+
+
+def test_overview_click_recenters(scroll_compositor: ScrollInstance) -> None:
+    """Clicking a window of another workspace in the overview focuses its
+    workspace (and re-centers the overview on it)."""
+    inst = scroll_compositor
+    with wayland_client(inst, "w1"):
+        wait_for_client_map(inst, "w1")
+        inst.cmd("workspace 2")
+        with wayland_client(inst, "w2"):
+            wait_for_client_map(inst, "w2")
+            inst.wait_for_idle()
+            assert _focused_workspace_name(inst.get_tree()) == "2"
+
+            res = inst.cmd("scale_workspaces enable")
+            assert res and res[0]["success"]
+            inst.wait_for_idle()
+
+            # Workspace 1 is the row above the centered workspace 2; click
+            # into its visible strip near the top of the output
+            inst.cmd("seat - cursor set 640 30")
+            inst.cmd("seat - cursor press button1")
+            inst.cmd("seat - cursor release button1")
+            inst.wait_for_idle()
+            assert inst.proc.poll() is None, "Compositor crashed on click"
+            assert _focused_workspace_name(inst.get_tree()) == "1", (
+                "clicking a window on another workspace must focus it"
+            )
+
+            inst.cmd("scale_workspaces disable")
+            inst.wait_for_idle()
+            assert inst.proc.poll() is None

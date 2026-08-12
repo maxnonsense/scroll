@@ -185,6 +185,18 @@ static void state_add_button(struct seatop_default_event *e, uint32_t button) {
 	e->pressed_button_count++;
 }
 
+// When clicking a window or workspace in the workspaces overview, the
+// active workspace may change: re-center the overview on it, like when
+// changing workspaces with the keyboard. The focus may have already
+// moved when hovering (focus_follows_mouse), so re-center
+// unconditionally; it is a no-op if the overview is already centered.
+static void overview_recenter_on_focus(void) {
+	if (!layout_overview_workspaces_enabled() || root->jumping) {
+		return;
+	}
+	layout_overview_workspaces_recompute_scale();
+}
+
 /*-------------------------------------------\
  * Functions used by handle_tablet_tool_tip  /
  *-----------------------------------------*/
@@ -244,6 +256,7 @@ static void handle_tablet_tool_tip(struct sway_seat *seat,
 
 		// Handle tapping on a container surface
 		seat_set_focus_container(seat, cont);
+		overview_recenter_on_focus();
 		seatop_begin_down(seat, node->sway_container, sx, sy);
 	}
 #if WLR_HAS_XWAYLAND
@@ -356,6 +369,7 @@ static void handle_button(struct sway_seat *seat, uint32_t time_msec,
 	if (node && node->type == N_WORKSPACE && surface == NULL) {
 		if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
 			seat_set_focus(seat, node);
+			overview_recenter_on_focus();
 			transaction_commit_dirty();
 		}
 		seat_pointer_notify_button(seat, time_msec, button, state);
@@ -427,6 +441,7 @@ static void handle_button(struct sway_seat *seat, uint32_t time_msec,
 		}
 
 		seat_set_focus(seat, node);
+		overview_recenter_on_focus();
 		transaction_commit_dirty();
 	}
 

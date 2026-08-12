@@ -102,6 +102,10 @@ void free_config(struct sway_config *config) {
 
 	memset(&config->handler_context, 0, sizeof(config->handler_context));
 
+	for (int i = 0; i < HOT_CORNER_COUNT; ++i) {
+		free(config->hot_corners[i]);
+	}
+
 	// TODO: handle all currently unhandled lists as we add implementations
 	if (config->symbols) {
 		for (int i = 0; i < config->symbols->length; ++i) {
@@ -279,6 +283,10 @@ static void config_defaults(struct sway_config *config) {
 	config->workspace_labels_height = 30;
 	config->scale_workspaces_labels = true;
 	config->scale_workspaces_gap = -1;
+	for (int i = 0; i < HOT_CORNER_COUNT; ++i) {
+		config->hot_corners[i] = NULL;
+	}
+	config->hot_corner_size = 10;
 	config->fullscreen_movefocus = FULLSCREEN_MOVEFOCUS_NOFOLLOW;
 	config->fullscreen_on_request = FULLSCREEN_REQUEST_DEFAULT;
 	config->align_reset_auto = true;

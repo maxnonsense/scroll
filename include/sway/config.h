@@ -33,6 +33,14 @@ struct sway_variable {
 	char *value;
 };
 
+enum sway_hot_corner {
+	HOT_CORNER_TOP_LEFT,
+	HOT_CORNER_TOP_RIGHT,
+	HOT_CORNER_BOTTOM_RIGHT,
+	HOT_CORNER_BOTTOM_LEFT,
+	HOT_CORNER_COUNT,
+};
+
 enum binding_input_type {
 	BINDING_KEYCODE,
 	BINDING_KEYSYM,
@@ -628,6 +636,9 @@ struct sway_config {
 	// Workspaces overview (scale_workspaces) options
 	bool scale_workspaces_labels;
 	int scale_workspaces_gap; // gap between workspaces in pixels, < 0 for auto
+	// Hot corners: command executed when the cursor enters an output corner
+	char *hot_corners[HOT_CORNER_COUNT];
+	int hot_corner_size; // size in pixels of the corner trigger area
 	enum sway_fullscreen_movefocus fullscreen_movefocus;
 	enum sway_fullscreen_request_mode fullscreen_on_request;
 	bool align_reset_auto;

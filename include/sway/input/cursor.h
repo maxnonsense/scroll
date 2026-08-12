@@ -35,6 +35,10 @@ struct sway_cursor {
 	pixman_region32_t confine; // invalid if active_constraint == NULL
 	bool active_confine_requires_warp;
 
+	// Hot corner the cursor is currently in, or -1. Used to trigger the
+	// hot corner command only when entering the corner.
+	int hot_corner;
+
 	struct wl_listener hold_begin;
 	struct wl_listener hold_end;
 	struct wl_listener pinch_begin;
@@ -97,6 +101,9 @@ struct sway_cursor *sway_cursor_create(struct sway_seat *seat);
  * This chooses a cursor icon and sends a motion event to the surface.
  */
 void cursor_rebase(struct sway_cursor *cursor);
+
+// Trigger hot corner commands if the cursor entered an output corner
+void cursor_check_hot_corners(struct sway_cursor *cursor);
 void cursor_rebase_all(void);
 void cursor_update_image(struct sway_cursor *cursor, struct sway_node *node);
 

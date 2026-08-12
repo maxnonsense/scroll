@@ -1614,6 +1614,19 @@ The default colors are:
 	on the left-most container, the left border will be hidden, on the right-most
 	container, the right border, and so on.	Default is _none_.
 
+*hot_corner* <top_left|top_right|bottom_left|bottom_right> <command|none>
+	Executes any scroll command when the cursor enters the given corner of an
+	output. The command triggers once when the cursor enters the corner, and
+	re-arms when it leaves it. Hot corners work in both the normal view and
+	the *scale_workspaces* overview. Use _none_ to remove a hot corner.
+
+	Example:
+
+		hot_corner top_left scale_workspaces toggle
+
+*hot_corner_size* <px>
+	Size in pixels of the corner trigger area for *hot_corner*. Default is 10.
+
 *input* <input_device> <input-subcommands...>
 	For details on input subcommands, see *scroll-input*(5).
 

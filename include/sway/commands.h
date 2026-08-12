@@ -253,6 +253,8 @@ sway_cmd cmd_workspace_labels_color;
 sway_cmd cmd_workspace_labels_height;
 sway_cmd cmd_scale_workspaces_gap;
 sway_cmd cmd_scale_workspaces_labels;
+sway_cmd cmd_hot_corner;
+sway_cmd cmd_hot_corner_size;
 sway_cmd cmd_workspace_layout;
 sway_cmd cmd_workspace_next_on_output_create_empty;
 sway_cmd cmd_ws_auto_back_and_forth;

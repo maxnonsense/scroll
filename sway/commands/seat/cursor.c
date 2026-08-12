@@ -25,6 +25,7 @@ static struct cmd_results *handle_command(struct sway_cursor *cursor,
 		wlr_cursor_move(cursor->cursor, NULL, delta_x, delta_y);
 		cursor_rebase(cursor);
 		wlr_seat_pointer_notify_frame(cursor->seat->wlr_seat);
+		cursor_check_hot_corners(cursor);
 	} else if (strcasecmp(argv[0], "set") == 0) {
 		if (argc < 3) {
 			return cmd_results_new(CMD_INVALID, "%s", expected_syntax);
@@ -35,6 +36,7 @@ static struct cmd_results *handle_command(struct sway_cursor *cursor,
 		wlr_cursor_warp_absolute(cursor->cursor, NULL, x, y);
 		cursor_rebase(cursor);
 		wlr_seat_pointer_notify_frame(cursor->seat->wlr_seat);
+		cursor_check_hot_corners(cursor);
 	} else {
 		if (argc < 2) {
 			return cmd_results_new(CMD_INVALID, "%s", expected_syntax);
