@@ -291,6 +291,11 @@ static int output_repaint_timer_handler(void *data) {
 		return 0;
 	}
 
+	// Always redraw the full output instead of only the damaged rects.
+	// On some scanout paths (e.g. Adreno/kgsl with linear buffers), partial
+	// repaints cause flashing horizontal lines when clients update quickly.
+	output_damage_whole(output);
+
 	output_configure_scene(output, &root->root_scene->tree.node, 1.0f);
 
 	struct wlr_scene_output_state_options opts = {

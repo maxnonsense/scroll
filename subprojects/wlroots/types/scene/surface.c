@@ -416,13 +416,90 @@ void wlr_scene_surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 	surface_reconfigure(scene_surface);
 }
 
+// Delay (in ms) before presenting newly-seen client dma-bufs, taken from
+// WLR_SCENE_DELAY_NEW_BUFFERS. Some drivers (e.g. Adreno/kgsl) have no
+// dma-buf implicit sync, so the compositor can sample a buffer the client's
+// GPU is still writing to. Freshly allocated buffers start zero-filled,
+// which makes the window flash fully transparent for a frame. Waiting a few
+// milliseconds before the first use of a new buffer gives the client's GPU
+// time to finish writing it; reused buffers still contain their previous
+// frame, so sampling those early is not noticeable.
+static int scene_surface_defer_delay_ms(void) {
+	static int delay = -1;
+	if (delay < 0) {
+		delay = 0;
+		const char *env = getenv("WLR_SCENE_DELAY_NEW_BUFFERS");
+		if (env != NULL && env[0] != '\0') {
+			delay = atoi(env);
+			if (delay < 0) {
+				delay = 0;
+			}
+		}
+	}
+	return delay;
+}
+
+static int scene_surface_defer_timer(void *data) {
+	struct wlr_scene_surface *surface = data;
+	// Apply the latest surface state; the scene will damage itself and
+	// schedule a new frame on the relevant outputs.
+	surface_reconfigure(surface);
+	return 0;
+}
+
+static bool scene_surface_defer_commit(struct wlr_scene_surface *surface) {
+	int delay = scene_surface_defer_delay_ms();
+	if (delay == 0) {
+		return false;
+	}
+	struct wlr_surface *wlr_surface = surface->surface;
+	if (wlr_surface->buffer == NULL) {
+		return false;
+	}
+	// With explicit sync the renderer waits on the acquire timeline, so
+	// there is no race to work around.
+	if (wlr_linux_drm_syncobj_v1_get_surface_state(wlr_surface) != NULL) {
+		return false;
+	}
+	// Only dma-buf buffers race with the client's GPU; shm buffers are
+	// copied synchronously on upload.
+	struct wlr_buffer *buffer = &wlr_surface->buffer->base;
+	struct wlr_dmabuf_attributes dmabuf;
+	if (!wlr_buffer_get_dmabuf(buffer, &dmabuf)) {
+		return false;
+	}
+	// Only the first commit of each buffer needs the delay
+	const size_t nseen = sizeof(surface->seen_buffers) / sizeof(surface->seen_buffers[0]);
+	for (size_t i = 0; i < nseen; ++i) {
+		if (surface->seen_buffers[i] == buffer) {
+			return false;
+		}
+	}
+	surface->seen_buffers[surface->seen_buffers_idx] = buffer;
+	surface->seen_buffers_idx = (surface->seen_buffers_idx + 1) % nseen;
+
+	if (surface->defer_timer == NULL) {
+		struct wl_event_loop *loop = wl_display_get_event_loop(
+			wl_client_get_display(wl_resource_get_client(wlr_surface->resource)));
+		surface->defer_timer = wl_event_loop_add_timer(loop,
+			scene_surface_defer_timer, surface);
+		if (surface->defer_timer == NULL) {
+			return false;
+		}
+	}
+	wl_event_source_timer_update(surface->defer_timer, delay);
+	return true;
+}
+
 static void handle_scene_surface_surface_commit(
 		struct wl_listener *listener, void *data) {
 	struct wlr_scene_surface *surface =
 		wl_container_of(listener, surface, surface_commit);
 	struct wlr_scene_buffer *scene_buffer = surface->buffer;
 
-	surface_reconfigure(surface);
+	if (!scene_surface_defer_commit(surface)) {
+		surface_reconfigure(surface);
+	}
 
 	// If the surface has requested a frame done event, honour that. The
 	// frame_callback_list will be populated in this case. We should only
@@ -452,6 +529,10 @@ static void surface_addon_destroy(struct wlr_addon *addon) {
 	struct wlr_scene_surface *surface = wl_container_of(addon, surface, addon);
 
 	scene_buffer_unmark_client_buffer(surface->buffer);
+
+	if (surface->defer_timer != NULL) {
+		wl_event_source_remove(surface->defer_timer);
+	}
 
 	wlr_addon_finish(&surface->addon);
 

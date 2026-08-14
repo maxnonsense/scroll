@@ -961,6 +961,21 @@ interact with the windows normally.
 the overview (default `yes`), and `scale_workspaces_gap <px>` sets the gap in
 pixels between the workspaces (computed automatically by default).
 
+### GPU sync workarounds (Adreno/kgsl and similar)
+
+On drivers without dma-buf implicit sync (e.g. Freedreno on the kgsl kernel
+driver), this fork always redraws full frames and uses `glFinish` at the end
+of each render pass, which fixes flashing horizontal lines caused by the
+display controller scanning out buffers the GPU is still writing.
+
+Client buffers have the same race: the compositor can sample a freshly
+allocated (zero-filled) client buffer before the client's GPU finished
+rendering into it, making the window flash transparent for a frame. Setting
+`WLR_SCENE_DELAY_NEW_BUFFERS=<ms>` (e.g. `15`) delays the first presentation
+of every newly-seen client dma-buf by that many milliseconds, keeping the
+previous frame on screen while the client's GPU finishes. Reused buffers are
+presented immediately, so steady-state latency is unaffected.
+
 ### Hot corners
 
 `hot_corner <top_left|top_right|bottom_left|bottom_right> <command|none>`
