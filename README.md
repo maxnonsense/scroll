@@ -968,13 +968,23 @@ driver), this fork always redraws full frames and uses `glFinish` at the end
 of each render pass, which fixes flashing horizontal lines caused by the
 display controller scanning out buffers the GPU is still writing.
 
-Client buffers have the same race: the compositor can sample a freshly
-allocated (zero-filled) client buffer before the client's GPU finished
-rendering into it, making the window flash transparent for a frame. Setting
-`WLR_SCENE_DELAY_NEW_BUFFERS=<ms>` (e.g. `15`) delays the first presentation
-of every newly-seen client dma-buf by that many milliseconds, keeping the
-previous frame on screen while the client's GPU finishes. Reused buffers are
-presented immediately, so steady-state latency is unaffected.
+Client buffers have the same race: the compositor can sample a client
+dma-buf before the client's GPU finished rendering into it. Freshly
+allocated buffers are zero-filled and clients usually clear to transparent
+at the start of every frame, so an early sample makes the window flash
+transparent for a frame. Two workarounds keep the previous frame on screen
+while the client's GPU finishes:
+
+- `WLR_SCENE_DELAY_NEW_BUFFERS=<ms>` (e.g. `15`) delays only the first
+  presentation of each newly-seen client dma-buf. Reused buffers are
+  presented immediately, so steady-state latency is unaffected, but a
+  mid-render sample of a reused buffer can still flash.
+- `WLR_SCENE_DELAY_BUFFERS=<ms>` delays every dma-buf commit instead, which
+  also covers reused buffers at the cost of that much extra latency for
+  GPU-rendered clients (15 ms caps client updates at ~66 fps). It takes
+  precedence over `WLR_SCENE_DELAY_NEW_BUFFERS`.
+
+Surfaces using explicit sync and shm buffers are never delayed.
 
 ### Hot corners
 

@@ -186,11 +186,14 @@ struct wlr_scene_surface {
 		struct wl_listener surface_destroy;
 		struct wl_listener surface_commit;
 
-		// Present newly-seen client dma-bufs with a small delay so the
-		// client's GPU work can finish before the compositor samples them.
-		// Workaround for drivers without dma-buf implicit sync (e.g.
-		// Adreno/kgsl); enabled with WLR_SCENE_DELAY_NEW_BUFFERS=<ms>.
+		// Present client dma-bufs with a small delay so the client's GPU
+		// work can finish before the compositor samples them. Workaround
+		// for drivers without dma-buf implicit sync (e.g. Adreno/kgsl);
+		// enabled with WLR_SCENE_DELAY_NEW_BUFFERS=<ms> (only the first
+		// commit of each buffer) or WLR_SCENE_DELAY_BUFFERS=<ms> (every
+		// commit).
 		struct wl_event_source *defer_timer;
+		bool defer_pending;
 		struct wlr_buffer *seen_buffers[4];
 		int seen_buffers_idx;
 	} WLR_PRIVATE;
