@@ -857,7 +857,7 @@ static const struct wlr_buffer_resource_interface buffer_resource_interface = {
 };
 
 static void linux_dmabuf_v1_destroy(struct wlr_linux_dmabuf_v1 *linux_dmabuf) {
-	wl_signal_emit_mutable(&linux_dmabuf->events.destroy, linux_dmabuf);
+	wl_signal_emit_mutable(&linux_dmabuf->events.destroy, NULL);
 
 	assert(wl_list_empty(&linux_dmabuf->events.destroy.listener_list));
 
@@ -943,6 +943,9 @@ static bool set_default_feedback(struct wlr_linux_dmabuf_v1 *linux_dmabuf,
 
 error_formats:
 	wlr_drm_format_set_finish(&formats);
+	if (main_device_fd >= 0) {
+		close(main_device_fd);
+	}
 error_compiled:
 	compiled_feedback_destroy(compiled);
 	return false;

@@ -16,6 +16,7 @@
 #include "sway/tree/workspace.h"
 #include "sway/tree/space.h"
 #include "sway/tree/node.h"
+#include "sway/tree/virtual_output.h"
 #include "sway/tree/focus_ring.h"
 #include "list.h"
 #include "sway/log.h"
@@ -69,6 +70,7 @@ struct sway_root *root_create(struct wl_display *wl_display) {
 
 	if (failed) {
 		wlr_scene_node_destroy(&root_scene->tree.node);
+		node_map_remove(&root->node);
 		free(root);
 		return NULL;
 	}
@@ -233,7 +235,15 @@ void root_scratchpad_show(struct sway_container *con) {
 	if (new_ws->output) {
 		struct wlr_box output_box;
 		output_get_box(new_ws->output, &output_box);
-		floating_fix_coordinates(con, &con->transform, &output_box);
+		struct wlr_fbox old = {
+			.x = con->transform.x, .y = con->transform.y,
+			.width = con->transform.width, .height = con->transform.height,
+		};
+		struct wlr_fbox new = {
+			.x = output_box.x, .y = output_box.y,
+			.width = output_box.width, .height = output_box.height,
+		};
+		floating_fix_coordinates(con, &old, &new);
 	}
 	set_container_transform(new_ws, con);
 
@@ -377,75 +387,13 @@ void root_get_box(struct sway_root *root, struct wlr_box *box) {
 	box->height = root->height;
 }
 
-static bool default_free_animation_activation_filter(struct sway_workspace *workspace,
-		void *data) {
-	return false;
-}
-
-static bool default_output_filter(struct sway_output *output, void *data) {
-	return true;
-}
-
-static bool default_output_fullscreen_filter(struct sway_output *output, void *data) {
-	return false;
-}
-
-static bool default_workspace_filter(struct sway_workspace *workspace, void *data) {
-	struct sway_output *output = workspace->output;
-	bool activated = output->wlr_output->enabled;
-	if (!layout_overview_workspaces_enabled()) {
-		activated = activated &&
-			(output->current.active_workspace == workspace ||
-			 (workspace->split.split != WORKSPACE_SPLIT_NONE && output->current.active_workspace == workspace->split.sibling));
-	}
-	return activated;
-}
-
-static bool default_workspace_tiling_filter(struct sway_workspace *workspace, void *data) {
-	bool tiling = true;
-	if (layout_overview_mode(workspace) == OVERVIEW_FLOATING) {
-		tiling = false;
-	}
-	return tiling;
-}
-
-static bool default_workspace_floating_filter(struct sway_workspace *workspace, void *data) {
-	bool floating = true;
-	if (layout_overview_mode(workspace) == OVERVIEW_TILING) {
-		floating = false;
-	}
-	return floating;
-}
-
-static bool default_container_filter(struct sway_workspace *workspace,
-		struct sway_container *container, void *data) {
-	return true;
-}
-
-static void filters_set_default(struct sway_root_filters *filters) {
-	filters->free_animation_activation_filter = default_free_animation_activation_filter;
-	filters->free_animation_activation_filter_data = NULL;
-	filters->output_filter = default_output_filter;
-	filters->output_filter_data = NULL;
-	filters->output_fullscreen_filter = default_output_fullscreen_filter;
-	filters->output_fullscreen_filter_data = NULL;
-	filters->workspace_filter = default_workspace_filter;
-	filters->workspace_filter_data = NULL;
-	filters->workspace_tiling_filter = default_workspace_tiling_filter;
-	filters->workspace_tiling_filter_data = NULL;
-	filters->workspace_floating_filter = default_workspace_floating_filter;
-	filters->workspace_floating_filter_data = NULL;
-	filters->container_filter = default_container_filter;
-	filters->container_filter_data = NULL;
-}
-
 /*
  * Delete all the filters on the list, and set the default ones as current.
  */
 void root_filters_reset(struct sway_root *root) {
 	if (root->filters_list->length == 0) {
+		// The default filter (LAYOUT_FILTER_ALL) shows everything
 		struct sway_root_filters *filters = calloc(1, sizeof(struct sway_root_filters));
-		filters_set_default(filters);
 		list_add(root->filters_list, filters);
 	}
 	for (int i = root->filters_list->length - 1; i > 0; i--) {
@@ -462,8 +410,8 @@ void root_filters_reset(struct sway_root *root) {
  * Create a sway_root_filters struct, push it to the filters_list and make it active.
  */
 struct sway_root_filters *root_filters_create(struct sway_root *root) {
+	// The default filter (LAYOUT_FILTER_ALL) shows everything
 	struct sway_root_filters *filters = calloc(1, sizeof(struct sway_root_filters));
-	filters_set_default(filters);
 	list_add(root->filters_list, filters);
 	root->filters = filters;
 	return filters;

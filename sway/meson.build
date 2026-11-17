@@ -144,6 +144,7 @@ sway_sources = files(
 	'commands/trail.c',
 	'commands/unmark.c',
 	'commands/urgent.c',
+	'commands/virtual_output.c',
 	'commands/workspace.c',
 	'commands/workspace_layout.c',
 	'commands/ws_auto_back_and_forth.c',
@@ -239,6 +240,7 @@ sway_sources = files(
 	'tree/arrange.c',
 	'tree/container.c',
 	'tree/node.c',
+	'tree/filter.c',
 	'tree/root.c',
 	'tree/view.c',
 	'tree/workspace.c',
@@ -248,6 +250,7 @@ sway_sources = files(
 	'tree/scene.c',
 	'tree/scene/debug.c',
 	'tree/focus_ring.c',
+	'tree/virtual_output.c',
 
 	'protocol/xdg_output_v1.c',
 )

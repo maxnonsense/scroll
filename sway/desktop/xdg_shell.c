@@ -54,14 +54,19 @@ static void popup_unconstrain(struct sway_xdg_popup *popup) {
 	popup->scene_tree->node.info.workspace =
 		layout_overview_workspaces_enabled() ? workspace : NULL;
 
+	struct sway_layout_transform transform;
+	layout_transform_container_get(view->container, false, &transform);
 	float scale = view_is_content_scaled(view) ? view_get_content_scale(view) : 1.0f;
-	scale *= layout_scale_enabled(workspace) ? layout_scale_get(workspace) : 1.0f;
+	scale *= transform.scale;
 
 	// the output box expressed in the coordinate system of the toplevel parent
 	// of the popup
+	double content_x = view->container->pending.content_x;
+	double content_y = view->container->pending.content_y;
+	layout_transform_point(&transform, &content_x, &content_y);
 	struct wlr_box output_toplevel_sx_box = {
-		.x = (workspace->x - view->container->pending.content_x + view->geometry.x) / scale,
-		.y = (workspace->y - view->container->pending.content_y + view->geometry.y) / scale,
+		.x = (workspace->x - content_x + view->geometry.x) / scale,
+		.y = (workspace->y - content_y + view->geometry.y) / scale,
 		.width = workspace->width / scale,
 		.height = workspace->height / scale,
 	};
@@ -342,6 +347,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 			new_geo->x != view->geometry.x ||
 			new_geo->y != view->geometry.y;
 
+	bool commit_client_transaction = false;
 	if (new_size) {
 		// The client changed its surface size in this commit. For floating
 		// containers, we resize the container to match. For tiling containers,
@@ -354,7 +360,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 				wlr_xdg_toplevel_set_size(view->wlr_xdg_toplevel, view->geometry.width,
 					view->geometry.height);
 			}
-			transaction_commit_dirty_client();
+			commit_client_transaction = true;
 		}
 
 		view_center_and_clip_surface(view);
@@ -371,6 +377,11 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 		if (view->saved_surface_tree && !successful) {
 			view_send_frame_done(view);
 		}
+	}
+
+	// Commit here, so the floating window move animation isn't interrupted.
+	if (commit_client_transaction) {
+		transaction_commit_dirty_client();
 	}
 }
 

@@ -16,6 +16,7 @@
 #include "sway/tree/container.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
+#include "sway/tree/virtual_output.h"
 #include "sway/tree/space.h"
 #include "sway/output.h"
 #include "sway/input/input-manager.h"
@@ -343,6 +344,40 @@ static void ipc_json_describe_enabled_output(struct sway_output *output,
 	struct wlr_output *wlr_output = output->wlr_output;
 	json_object_object_add(object, "non_desktop", json_object_new_boolean(false));
 	json_object_object_add(object, "active", json_object_new_boolean(true));
+	json_object_object_add(object, "maximize_virtual_output",
+			json_object_new_boolean(output->maximize_virtual_output));
+	if (output->virtual_outputs) {
+		json_object *virtual_outputs = json_object_new_array();
+		struct sway_virtual_output *active =
+			output_virtual_outputs_get_active(output);
+		for (int i = 0; i < output->virtual_outputs->length; ++i) {
+			struct sway_virtual_output *vo =
+				output->virtual_outputs->items[i];
+			if (vo->children[0]) {
+				continue;
+			}
+			json_object *vo_object = json_object_new_object();
+			json_object_object_add(vo_object, "name",
+					json_object_new_string(vo->name));
+			json_object_object_add(vo_object, "visible",
+					json_object_new_boolean(virtual_output_is_visible(vo)));
+			json_object_object_add(vo_object, "active",
+					json_object_new_boolean(vo == active));
+			json_object_object_add(vo_object, "rect",
+					ipc_json_create_rect(&vo->output_area));
+			json_object_object_add(vo_object, "split_rect",
+					ipc_json_create_rect(&vo->split_area));
+			json_object *workspaces = json_object_new_array();
+			for (int j = 0; j < vo->workspaces->length; ++j) {
+				struct sway_workspace *ws = vo->workspaces->items[j];
+				json_object_array_add(workspaces,
+						json_object_new_string(ws->name));
+			}
+			json_object_object_add(vo_object, "workspaces", workspaces);
+			json_object_array_add(virtual_outputs, vo_object);
+		}
+		json_object_object_add(object, "virtual_outputs", virtual_outputs);
+	}
 	json_object_object_add(object, "dpms",
 			json_object_new_boolean(wlr_output->enabled));
 	json_object_object_add(object, "power",
@@ -521,6 +556,12 @@ static void ipc_json_describe_workspace(struct sway_workspace *workspace,
 	json_object_object_add(object, "fullscreen_mode", json_object_new_int(1));
 	json_object_object_add(object, "output", workspace->output ?
 			json_object_new_string(workspace->output->wlr_output->name) : NULL);
+	json_object_object_add(object, "virtual_output",
+			workspace->virtual_output && workspace->virtual_output->name ?
+			json_object_new_string(workspace->virtual_output->name) : NULL);
+	json_object_object_add(object, "virtual_output_visible",
+			json_object_new_boolean(
+				virtual_output_is_visible(workspace->virtual_output)));
 	json_object_object_add(object, "urgent",
 			json_object_new_boolean(workspace->urgent));
 	json_object_object_add(object, "representation", workspace->representation ?
@@ -808,6 +849,10 @@ json_object *ipc_json_describe_node(struct sway_node *node) {
 	node_get_box(node, &box);
 	if (node->type == N_CONTAINER) {
 		struct sway_container *con = node->sway_container;
+		struct sway_layout_transform transform;
+		layout_transform_container_get(con, false, &transform);
+		box.x = round(layout_transform_x(&transform, box.x));
+		box.y = round(layout_transform_y(&transform, box.y));
 		bool has_titlebar = con->title_bar.tree->node.enabled;
 		if (has_titlebar) {
 			struct wlr_box deco_rect = {0, 0, 0, 0};
@@ -1088,6 +1133,11 @@ static json_object *describe_libinput_device(struct libinput_device *device) {
 		case LIBINPUT_CONFIG_SCROLL_ON_BUTTON_DOWN:
 			scroll_method = "on_button_down";
 			break;
+#if HAVE_LIBINPUT_CONFIG_SCROLL_CIRCULAR
+		case LIBINPUT_CONFIG_SCROLL_CIRCULAR:
+			scroll_method = "circular";
+			break;
+#endif
 		}
 		json_object_object_add(object, "scroll_method",
 				json_object_new_string(scroll_method));
@@ -1574,6 +1624,8 @@ json_object *ipc_json_describe_scroller(struct sway_workspace *workspace) {
 	enum sway_layout_reorder reorder = layout_modifiers_get_reorder(workspace);
 	json_object_object_add(object, "reorder",
 		json_object_new_string(reorder == REORDER_AUTO ? "auto" : "lazy"));
+	bool floating = layout_modifiers_get_floating(workspace);
+	json_object_object_add(object, "floating", json_object_new_boolean(floating));
 
 	return object;
 }

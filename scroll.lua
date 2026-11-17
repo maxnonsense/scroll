@@ -86,16 +86,20 @@ function scroll.animations_set_enabled(enable) end
 
 ---
 --- Execute a scroll command with container or workspace as its context.
---- If the first paramenter is nil, use the default context, usually the
+--- If the first argument is nil, use the default context, usually the
 --- focused container or workspace.
+--- opts is a table with optional parameters:
+---   commit: true(default)|false Commit the transaction, possibly ending
+---           ongoing animations
 ---
 --- Returns all the results/errors in an array.
 ---
 --- @param context integer|nil
 --- @param command string
+--- @param opts table
 ---
 --- @return string[]
-function scroll.command(context, command) end
+function scroll.command(context, command, opts) end
 
 ---
 --- Execute a command in the shell.
@@ -130,6 +134,14 @@ function scroll.focused_view() end
 ---
 --- @return integer|nil
 function scroll.focused_container() end
+
+---
+--- Returns the container ID of the execution context if the command/script
+--- was run via criteria (e.g. `[class="XTerm"] lua script.lua`), or nil if
+--- there is no context (run globally).
+---
+--- @return integer|nil
+function scroll.context_container() end
 
 ---
 --- Returns the focused workspace ID or nil if none.
@@ -368,6 +380,21 @@ function scroll.container_get_geometry(container) end
 --- @return table|nil
 function scroll.container_get_animated_geometry(container) end
 
+---
+--- Returns a table with the container's animated values,
+--- or nil if the container is invalid.
+--- This reflects the current animated variable values.
+--- The keys and values of that table are:
+---   x: number
+---   y: number
+---   width: number
+---   height: number
+---   animating: boolean
+---
+--- @param container integer
+---
+--- @return table|nil
+function scroll.container_get_animated_values(container) end
 
 ---
 --- Returns a string with the fullscreen state for container.
@@ -500,6 +527,7 @@ function scroll.workspace_get_floating(workspace) end
 ---   focus: true|false
 ---   center_horizontal: true|false
 ---   center_vertical: true|false
+---   floating: true|false
 ---
 --- @param workspace integer
 ---
@@ -517,6 +545,7 @@ function scroll.workspace_get_mode(workspace) end
 ---   focus: true|false
 ---   center_horizontal: true|false
 ---   center_vertical: true|false
+---   floating: true|false
 ---
 --- @param workspace integer
 --- @param modifiers table
@@ -565,20 +594,6 @@ function scroll.workspace_get_height(workspace) end
 function scroll.workspace_get_pin(workspace) end
 
 ---
---- Returns a table with the split state for workspace.
---- The keys and values of that table are:
----
----   split: "none"|"top"|"bottom"|"left"|"right"
----   fraction: number
----   gap: integer
----   sibling: the sibling workspace's ID
----
---- @param workspace integer
----
---- @return table
-function scroll.workspace_get_split(workspace) end
-
----
 --- Returns the workspace's output ID, or nil if none.
 ---
 --- @param workspace integer
@@ -613,10 +628,33 @@ function scroll.output_get_active_workspace(output) end
 ---
 --- Returns an array with all the existing workspaces assigned to output.
 ---
---- @praam output integer
+--- @param output integer
 ---
 --- @return integer[]
 function scroll.output_get_workspaces(output) end
+
+---
+--- Returns an array with a table describing each virtual output of `output`.
+--- The internal nodes of the split tree (which hold no workspaces) are not
+--- included. Each table has these fields:
+---
+---   name: string                     Virtual output name.
+---   visible: boolean                 Whether it is currently visible.
+---   active: boolean                  Whether it is the active virtual output.
+---   rect: table                      Effective geometry (x, y, width, height).
+---   split_rect: table                Geometry without the maximize override.
+---   usable_rect: table               Usable area (x, y, width, height).
+---   workspaces: integer[]            IDs of its workspaces.
+---   workspace_names: string[]        Names of its workspaces.
+---   active_workspace: integer|nil    ID of its active workspace.
+---   maximized: boolean               Output's maximize_virtual_output flag.
+---
+--- Returns an empty array if the output is invalid or has no virtual outputs.
+---
+--- @param output integer
+---
+--- @return table[]
+function scroll.output_get_virtual_outputs(output) end
 
 ---
 --- Returns an array with all the outputs (displays).

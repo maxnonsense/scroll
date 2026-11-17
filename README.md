@@ -58,8 +58,8 @@ supports some added features:
   portrait or landscape monitors. You can define the layout orientation per
   output (monitor).
 
-* For ultra-wide displays, you can split a workspace in two and show them both
-  at the same time (`workspace split` command).
+* For ultra-wide displays, you can split a monitor into several virtual
+  outputs (`virtual_output` command).
 
 * Optionally, minimize windows to scratchpad.
 
@@ -153,6 +153,11 @@ Install scroll: `dnf install scroll`
 
 Thanks to @Diax170 for maintaining a nix flake of scroll in his repository,
 [here](https://github.com/Diax170/scroll-flake).
+
+### Gentoo
+
+There is an ebuild for scroll in the [gentoo-tilarids](https://github.com/tilarids/gentoo-tilarids) overlay,
+[here](https://github.com/tilarids/gentoo-tilarids/blob/main/gui-wm/scroll/scroll-9999.ebuild).
 
 ### Artix Linux and Arch-derived Distributions not Using `systemd`
 
@@ -663,6 +668,8 @@ mode "modifiers" {
     bindsym w set_mode fitfraction; mode default
     bindsym Shift+w set_mode fitsplit; mode default
     bindsym Ctrl+w set_mode nofit; mode default
+    bindsym f set_mode floating; mode default
+    bindsym Shift+f set_mode nofloating; mode default
 
     # Return to default mode
     bindsym Escape mode "default"
@@ -798,7 +805,7 @@ At window creation time, *scroll* can apply several modifiers to the
 current working mode (*h/v*). `set_mode` supports extra arguments:
 
 ``` config
-set_mode [<h|v|t> <after|before|end|beg> <nofit|fitsplit|fitfraction> <focus|nofocus> <center_horiz|nocenter_horiz> <center_vert|nocenter_vert> <reorder_auto|noreorder_auto>]
+set_mode [<h|v|t> <after|before|end|beg> <nofit|fitsplit|fitfraction> <focus|nofocus> <center_horiz|nocenter_horiz> <center_vert|nocenter_vert> <reorder_auto|noreorder_auto> <floating|nofloating>]
 ```
 
 1. `<h|v|t>`: set horizontal, vertical, or toggle the current mode.
@@ -827,6 +834,11 @@ regardless of what you do, until you set `reorder_auto` again.
 (or not) on the screen. The default value is the one in your configuration.
 7. `center_vert/nocenter_vert`: It will keep the active window centered
 (or not) in its column. The default value is the one in your configuration.
+8. `floating/nofloating`: floating windows mode. `nofloating` (default) is
+the normal *scroll* behavior, where new windows are tiled. `floating` makes
+any window mapped in this workspace open as a floating window. Only new
+windows are affected, and `for_window` can still override it, so you can use
+`floating disable` as a rule to bring a window back to the tiling layout.
 
 You can skip any number of parameters when calling the command, and their
 order doesn't matter.
@@ -894,8 +906,8 @@ can always align any column to the *center*, *left* or *right* of the monitor
 *vertical* mode. For example center a column for easier reading, regardless of
 what happens to the other columns. If you want to go back to automatic mode,
 you need to call `align reset`. However, there is also a configuration option,
-`align_reset_auto yes|no`. It is `yes` by default, which means every time you
-change focus to a window outside of the viewport, the alignment will
+`align_reset_auto yes|no`. It is `yes` by default, which means every time
+changing focus to a window would breaks the alignment, the alignment will
 be reset automatically.
 
 You can also center a window on your workspace using *middle*, it
@@ -952,9 +964,9 @@ way to see where things are and move the active focus, or reposition windows.
 scale_workspaces enable|disable|toggle
 ```
 
-This command will smoothly zoom out every output, showing its workspaces as a
-vertical strip centered on the focused workspace, with parts of the
-neighboring workspaces visible. As in `scale_workspace`, you can still
+This command will smoothly zoom out every (virtual) output, showing its
+workspaces as a vertical strip centered on the focused workspace, with parts
+of the neighboring workspaces visible. As in `scale_workspace`, you can still
 interact with the windows normally.
 
 `scale_workspaces_labels yes|no` shows or hides the workspace name labels in
@@ -1321,10 +1333,12 @@ removing windows (`remove`) or setting the current one as the last one in the
 ring (`set`).
 
 You can use `focus_ring prev|next|first|last` to navigate the ring focusing its
-windows.
+windows. By default navigation stops at both ends of the ring, set the
+`focus_ring_wrap` option to `true` if you want it to wrap around instead.
 
 ``` config
 # focus_ring_length 0
+# focus_ring_wrap false
 bindsym $mod+Shift+bracketleft focus_ring prev
 bindsym $mod+Shift+bracketright focus_ring next
 bindsym $mod+Shift+Return focus_ring set
@@ -1565,7 +1579,7 @@ scroll.add_callback("workspace_create", on_create_ws, nil)
 Examples:
 
 ```
-lua $lua_scripts/workspace_exec.lua 1 workspace split v 0.5
+lua $lua_scripts/workspace_exec.lua 1 virtual_output split v 0.5
 lua $lua_scripts/workspace_exec.lua 3 exec kitty yazi
 lua $lua_scripts/workspace_exec.lua 1 exec kitty
 ```
@@ -1656,10 +1670,10 @@ and equal to the gap between workspaces.
 
 ### General Options
 
-`align_reset_auto`: default is `yes` (`true`). If `true`, every time you
-change focus to a window outside of the viewport, any active alignment
-(`align` command) will be reset automatically, without any need to call
-`align reset`.
+`align_reset_auto`: default is `yes` (`true`). If `true`, alignment through
+the `align` command is reset when changing focus to a new window breaks the
+current alignment. If `false`, you need to call `align reset` to undo the
+alignment.
 
 `cursor_shake_magnify <true|false>`: Default value is `false`. If `true`,
 shaking the cursor will magnify it. It can be useful to find the location of
@@ -1831,9 +1845,11 @@ workspaces`).
 
 `layer_shell`: curve to animate layer shell surfaces and popups.
 
-`fade_in`: curve to animate the opacity of an opening window.
+`fade_in`: curve to animate an increase in opacity, for example, when opening
+a window.
 
-`fade_out`: curve to animate the opacity of a closing window.
+`fade_out`: curve to animate a decrease in opacity, for example, when closing
+a window.
 
 Format of an animation curve:
 
@@ -2186,8 +2202,8 @@ features, among them:
   portrait or landscape monitors. You can define the layout orientation per
   output (monitor).
 
-* For ultra-wide displays, you can split a workspace in two and show them both
-  at the same time (`workspace split` command).
+* For ultra-wide displays, split a monitor into several virtual outputs
+  (`virtual_output` command).
 
 Aside from the differences mentioned above, *scroll* adds many new commands
 and configuration options. For those familiar with *sway*, this is a list that
@@ -2200,7 +2216,8 @@ each one of them:
 
 `align_reset_auto`, `animations`, `cursor_shake_magnify`,
 `cursor_shake_magnify_sensitivity`, `cycle_size_wrap`, `focus_ring_length`,
-`fullscreen_movefocus`, `gesture_scroll_enable`, `gesture_scroll_fingers`,
+`focus_ring_wrap`, `fullscreen_movefocus`,
+`gesture_scroll_enable`, `gesture_scroll_fingers`,
 `gesture_scroll_sensitivity`,  `jump_labels_background`, `jump_labels_color`,
 `jump_labels_keys`, `jump_labels_scale`, `layout_Default_mode`, `layout_default_height`,
 `layout_default_width`, `layout_heights`, `layout_widths`, `maximize_if_single`,
@@ -2230,7 +2247,7 @@ insertion location.
 `focus_follows_mouse full`, `focus_wrapping stay`,
 `fullscreen_on_request default|layout`, `titlebar_border_radius`,
 `kill focused|unfocused|all`, `send_shortcut`, `workspace swap`,
-`workspace split`, `xdg_activation_force`
+`virtual_output`, `xdg_activation_force`
 
 `lua`, `lua_eval` and API
 

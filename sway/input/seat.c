@@ -32,6 +32,7 @@
 #include "sway/tree/arrange.h"
 #include "sway/tree/container.h"
 #include "sway/tree/root.h"
+#include "sway/tree/virtual_output.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
 #include "sway/desktop/transaction.h"
@@ -1173,13 +1174,15 @@ static void seat_set_workspace_focus(struct sway_seat *seat, struct sway_node *n
 				}
 			}
 		}
-		if (container->fullscreen) {
-			container_set_fullscreen(container, FULLSCREEN_WORKSPACE);
-			node_set_dirty(&container->node);
-			node_set_dirty(&new_workspace->node);
+		if (new_workspace) {
+			if (container->fullscreen) {
+				container_set_fullscreen(container, FULLSCREEN_WORKSPACE);
+				node_set_dirty(&container->node);
+				node_set_dirty(&new_workspace->node);
+			}
+			arrange_workspace(new_workspace);
+			container_raise_floating(container);
 		}
-		arrange_workspace(new_workspace);
-		container_raise_floating(container);
 	}
 	if (container && container->pending.workspace) {
 		if (container->pending.fullscreen_layout == FULLSCREEN_ENABLED &&
@@ -1300,6 +1303,15 @@ static void seat_set_workspace_focus(struct sway_seat *seat, struct sway_node *n
 
 	seat->has_focus = true;
 
+	// In maximized_virtual_output mode, focusing a workspace of a different
+	// virtual output, changes which one is active, recompute its geometry
+	if (new_workspace && new_workspace->virtual_output &&
+			new_workspace->virtual_output->output->maximize_virtual_output &&
+			(!last_workspace ||
+			 last_workspace->virtual_output != new_workspace->virtual_output)) {
+		arrange_output(new_workspace->virtual_output->output);
+	}
+
 	if (config->smart_gaps && new_workspace) {
 		// When smart gaps is on, gaps may change when the focus changes so
 		// the workspace needs to be arranged
@@ -1309,8 +1321,7 @@ static void seat_set_workspace_focus(struct sway_seat *seat, struct sway_node *n
 	if (config->align_reset_auto && last_workspace &&
 		last_workspace == new_workspace &&
 		layout_workspace_get_align(last_workspace) != ALIGN_NONE) {
-		// Reset alignment only if focused window is out of the viewport
-		if (container && !container_in_viewport(container)) {
+		if (container && !layout_alignment_keep(last_workspace, container)) {
 			layout_workspace_set_align(last_workspace, ALIGN_NONE);
 		}
 	}

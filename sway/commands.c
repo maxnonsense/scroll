@@ -115,8 +115,10 @@ static const struct cmd_handler handlers[] = {
 	{ "unbindgesture", cmd_unbindgesture },
 	{ "unbindswitch", cmd_unbindswitch },
 	{ "unbindsym", cmd_unbindsym },
+	{ "virtual_output", cmd_virtual_output },
 	{ "workspace", cmd_workspace },
 	{ "workspace_auto_back_and_forth", cmd_ws_auto_back_and_forth },
+	{ "workspace_switch_wrapping", cmd_workspace_switch_wrapping },
 	{ "xdg_activation_force", cmd_xdg_activation_force },
 };
 
@@ -129,6 +131,7 @@ static const struct cmd_handler config_handlers[] = {
 	{ "cycle_size_wrap", cmd_cycle_size_wrap },
 	{ "default_orientation", cmd_default_orientation },
 	{ "focus_ring_length", cmd_focus_ring_length },
+	{ "focus_ring_wrap", cmd_focus_ring_wrap },
 	{ "fullscreen_movefocus", cmd_fullscreen_movefocus },
 	{ "gesture_scroll_enable", cmd_gesture_scroll_enable },
 	{ "gesture_scroll_fingers", cmd_gesture_scroll_fingers },
@@ -299,9 +302,6 @@ list_t *execute_command(char *_exec, struct sway_seat *seat,
 
 	config->handler_context.seat = seat;
 
-	// Make all transactions belonging to this command be delayed
-	bool old_delay = server.delay_transaction;
-	server.delay_transaction = true;
 	do {
 		for (; isspace(*head); ++head) {}
 		// Extract criteria (valid for this command list only).
@@ -403,7 +403,6 @@ list_t *execute_command(char *_exec, struct sway_seat *seat,
 		free_argv(argc, argv);
 	} while(head);
 cleanup:
-	server.delay_transaction = old_delay;
 	free(exec);
 	list_free(containers);
 	return res_list;

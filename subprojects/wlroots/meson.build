@@ -76,7 +76,7 @@ features = {
 	'gbm-allocator': false,
 	'udmabuf-allocator': false,
 	'session': false,
-	'color-management': false,
+	'icc-profile': false,
 }
 internal_features = {
 	'xcb-errors': false,
@@ -98,7 +98,7 @@ wayland_server = dependency('wayland-server',
 )
 
 drm = dependency('libdrm',
-	version: '>=2.4.129',
+	version: '>=2.4.134',
 	fallback: 'libdrm',
 	default_options: [
 		'auto_features=disabled',

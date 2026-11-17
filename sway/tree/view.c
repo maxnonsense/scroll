@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <wayland-server-core.h>
@@ -30,9 +31,9 @@
 #include "sway/input/seat.h"
 #include "sway/scene_descriptor.h"
 #include "sway/server.h"
-#include "sway/sway_text_node.h"
 #include "sway/tree/arrange.h"
 #include "sway/tree/container.h"
+#include "sway/tree/filter.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
 #include "sway/config.h"
@@ -120,6 +121,25 @@ err:
 	return false;
 }
 
+static void unmapped_views_add(struct sway_view *view) {
+	if (!root) {
+		return;
+	}
+	if (list_find(root->unmapped_views, view) < 0) {
+		list_add(root->unmapped_views, view);
+	}
+}
+
+static void unmapped_views_remove(struct sway_view *view) {
+	if (!root) {
+		return;
+	}
+	int index = list_find(root->unmapped_views, view);
+	if (index >= 0) {
+		list_del(root->unmapped_views, index);
+	}
+}
+
 void view_destroy(struct sway_view *view) {
 	if (!sway_assert(view->surface == NULL, "Tried to free mapped view")) {
 		return;
@@ -133,10 +153,7 @@ void view_destroy(struct sway_view *view) {
 				"(might have a pending transaction?)")) {
 		return;
 	}
-	int index = list_find(root->unmapped_views, view);
-	if (index >= 0) {
-		list_del(root->unmapped_views, index);
-	}
+	unmapped_views_remove(view);
 	wl_list_remove(&view->events.unmap.listener_list);
 	list_free(view->executed_criteria);
 
@@ -410,17 +427,11 @@ void view_autoconfigure(struct sway_view *view) {
 
 	if (output && (con->pending.fullscreen_mode == FULLSCREEN_WORKSPACE ||
 		con->pending.fullscreen_layout == FULLSCREEN_ENABLED)) {
-		if (ws && ws->split.split != WORKSPACE_SPLIT_NONE) {
-			con->pending.content_x = ws->split.output_area.x;
-			con->pending.content_y = ws->split.output_area.y;
-			con->pending.content_width = ws->split.output_area.width;
-			con->pending.content_height = ws->split.output_area.height;
-		} else {
-			con->pending.content_x = output->lx;
-			con->pending.content_y = output->ly;
-			con->pending.content_width = output->width;
-			con->pending.content_height = output->height;
-		}
+		struct wlr_box *box = ws ? workspace_get_output_area(ws) : NULL;
+		con->pending.content_x = box ? box->x : output->lx;
+		con->pending.content_y = box ? box->y : output->ly;
+		con->pending.content_width = box ? box->width : output->width;
+		con->pending.content_height = box ? box->height : output->height;
 		if (view_is_content_scaled(view)) {
 			float scale = view_get_content_scale(view);
 			con->pending.content_width /= scale;
@@ -914,6 +925,12 @@ void view_map(struct sway_view *view, struct wlr_surface *wlr_surface,
 	view->lua.mapped = true;
 	view->surface = wlr_surface;
 	view_populate_pid(view);
+	// X11 clients can remap an unmapped view, so make sure we remove it
+	unmapped_views_remove(view);
+	// and drop the frame we kept for its fade out animation
+	if (view->saved_surface_tree) {
+		view_remove_saved_buffer(view);
+	}
 	view->container = container_create(view);
 
 	if (view->ctx == NULL) {
@@ -1021,7 +1038,8 @@ void view_map(struct sway_view *view, struct wlr_surface *wlr_surface,
 	view->container->pending.decoration.shadow_color_g = config->decoration.shadow_color[1];
 	view->container->pending.decoration.shadow_color_b = config->decoration.shadow_color[2];
 	view->container->pending.decoration.shadow_color_a = config->decoration.shadow_color[3];
-	if (view->impl->wants_floating && view->impl->wants_floating(view)) {
+	if (layout_modifiers_get_floating(ws) ||
+			(view->impl->wants_floating && view->impl->wants_floating(view))) {
 		view->container->pending.border = config->floating_border;
 		view->container->pending.border_thickness = config->floating_border_thickness;
 		container_set_floating(view->container, true);
@@ -1085,6 +1103,9 @@ void view_map(struct sway_view *view, struct wlr_surface *wlr_surface,
 		input_manager_set_focus(&view->container->node);
 	}
 
+	filter_apply();
+	view->container->current.filtered = view->container->pending.filtered;
+
 	if (view->ext_foreign_toplevel) {
 		update_ext_foreign_toplevel(view);
 	}
@@ -1130,11 +1151,14 @@ void view_unmap(struct sway_view *view) {
 
 	layout_trail_remove_view(view);
 	focus_ring_remove_view(root->focus_ring, view);
+	struct sway_workspace *ws = view->container->pending.workspace;
+	if (ws && layout_workspace_get_align_container(ws) == view->container) {
+		layout_workspace_set_align(ws, ALIGN_NONE);
+	}
 
 	struct sway_container *parent = view->container->pending.parent;
-	struct sway_workspace *ws = view->container->pending.workspace;
 	const bool fullscreen = view->container->fullscreen;
-	list_add(root->unmapped_views, view);
+	unmapped_views_add(view);
 	view->container->pending.alpha = 0.0f;
 	container_begin_destroy(view->container);
 	if (parent) {
@@ -1276,7 +1300,9 @@ void view_update_title(struct sway_view *view, bool force) {
 	}
 
 	free(view->container->title);
-	free(view->container->formatted_title);
+	view->container->title = NULL;
+	free(view->container->pending.formatted_title);
+	view->container->pending.formatted_title = NULL;
 
 	size_t len = parse_title_format(view->container, NULL);
 
@@ -1287,21 +1313,12 @@ void view_update_title(struct sway_view *view, bool force) {
 		}
 
 		parse_title_format(view->container, buffer);
-		view->container->formatted_title = buffer;
-	} else {
-		view->container->formatted_title = NULL;
+		view->container->pending.formatted_title = buffer;
 	}
 
 	view->container->title = title ? strdup(title) : NULL;
 
-	// Update title after the global font height is updated
-	if (view->container->title_bar.title_text && len) {
-		sway_text_node_set_text(view->container->title_bar.title_text,
-			view->container->formatted_title);
-		container_arrange_title_bar(view->container);
-	} else {
-		container_update_title_bar(view->container);
-	}
+	node_set_dirty(&view->container->node);
 
 	ipc_event_window(view->container, "title");
 
@@ -1363,12 +1380,17 @@ bool view_is_fully_visible(struct sway_view *view) {
 		return false;
 	}
 	struct wlr_box box_c, box_o;
-	container_get_box(view->container, &box_c);
+	layout_container_screen_wlr_box(view->container, false, &box_c);
 	bool floating = container_is_floating(view->container);
 	if (floating) {
 		root_get_box(root, &box_o);
 	} else {
-		output_get_box(workspace->output, &box_o);
+		struct wlr_box *area = workspace_get_output_area(workspace);
+		if (area) {
+			box_o = *area;
+		} else {
+			output_get_box(workspace->output, &box_o);
+		}
 	}
 	if (!wlr_box_contains_box(&box_o, &box_c)) {
 		return false;
@@ -1379,7 +1401,7 @@ bool view_is_fully_visible(struct sway_view *view) {
 		struct sway_container *con = workspace->floating->items[i];
 		if (i > idx) {
 			struct wlr_box box;
-			container_get_box(con, &box);
+			layout_container_screen_wlr_box(con, false, &box);
 			if (wlr_box_intersects(&box_c, &box)) {
 				return false;
 			}
@@ -1556,15 +1578,73 @@ void view_increment_content_scale(struct sway_view *view, double increment) {
 	view_set_content_scale(view, scale);
 }
 
-float view_get_content_scale(struct sway_view *view) {
 #if WLR_HAS_XWAYLAND
-	if (!config->xwayland_output_scale && view->type == SWAY_VIEW_XWAYLAND && view->container) {
+static struct wlr_xwayland_surface *xwayland_surface_from_wlr_surface(struct wlr_surface *surface) {
+	while (surface) {
+		struct wlr_xwayland_surface *xsurface =
+			wlr_xwayland_surface_try_from_wlr_surface(surface);
+		if (xsurface) {
+			return xsurface;
+		}
+		struct wlr_subsurface *subsurface = wlr_subsurface_try_from_wlr_surface(surface);
+		if (!subsurface) {
+			return NULL;
+		}
+		surface = subsurface->parent;
+	}
+	return NULL;
+}
+
+static float xwayland_surface_output_scale(struct wlr_xwayland_surface *xsurface) {
+	if (!xsurface || !root || !root->output_layout) {
+		return 1.0f;
+	}
+	struct wlr_output *output = wlr_output_layout_output_at_physical(
+			root->output_layout, xsurface->x, xsurface->y);
+	return output ? output->scale : 1.0f;
+}
+
+static float view_get_output_scale(struct sway_view *view) {
+	if (view->container) {
 		struct sway_workspace *workspace = view->container->pending.workspace;
 		if (workspace && workspace->output) {
-			float oscale = workspace->output->wlr_output->scale;
+			return workspace->output->wlr_output->scale;
+		}
+	}
+	if (!config->xwayland_output_scale && view->type == SWAY_VIEW_XWAYLAND) {
+		return xwayland_surface_output_scale(view->wlr_xwayland_surface);
+	}
+	return 1.0f;
+}
+#endif
+
+float view_get_surface_content_scale(struct wlr_surface *surface) {
+	struct sway_view *view = surface ? view_from_wlr_surface(surface) : NULL;
+	if (view) {
+		float scale = view_get_content_scale(view);
+		return scale > 0.0f ? scale : 1.0f;
+	}
+#if WLR_HAS_XWAYLAND
+	if (surface && !config->xwayland_output_scale) {
+		struct wlr_xwayland_surface *xsurface = xwayland_surface_from_wlr_surface(surface);
+		if (xsurface) {
+			float oscale = xwayland_surface_output_scale(xsurface);
 			if (oscale != 1.0f) {
-				return view->content_scale > 0.0f ? view->content_scale / oscale : 1.0f / oscale;
+				return 1.0f / oscale;
 			}
+		}
+	}
+#endif
+	return 1.0f;
+}
+
+float view_get_content_scale(struct sway_view *view) {
+#if WLR_HAS_XWAYLAND
+	if (!config->xwayland_output_scale && view->type == SWAY_VIEW_XWAYLAND) {
+		float oscale = view_get_output_scale(view);
+		if (oscale != 1.0f) {
+			float content_scale = view->content_scale > 0.0f ? view->content_scale : 1.0f;
+			return content_scale / oscale;
 		}
 	}
 #endif
@@ -1580,18 +1660,7 @@ void view_reset_content_scale(struct sway_view *view) {
 }
 
 bool view_is_content_scaled(struct sway_view *view) {
-#if WLR_HAS_XWAYLAND
-	if (!config->xwayland_output_scale && view->type == SWAY_VIEW_XWAYLAND && view->container) {
-		struct sway_workspace *workspace = view->container->pending.workspace;
-		if (workspace && workspace->output) {
-			float oscale = workspace->output->wlr_output->scale;
-			if (oscale != 1.0f) {
-				return true;
-			}
-		}
-	}
-#endif
-	return view->content_scale > 0.0f;
+	return view_get_content_scale(view) > 0.0f;
 }
 
 static void container_get_borders(struct sway_container *container, int *border_horiz, int *border_vert) {
@@ -1615,12 +1684,12 @@ static void view_get_animation_sizes(struct sway_view *view, double *wt, double 
 	struct sway_container *con = view->container;
 	int border_horiz, border_vert;
 	container_get_borders(con, &border_horiz, &border_vert);
-	if (animation_enabled()) {
-		*wt = MAX(con->animation.wt - border_horiz, 0.0);
-		*ht = MAX(con->animation.ht - border_vert, 0.0);
+	if (con->animation.w.animating || con->animation.h.animating) {
+		*wt = fmax(con->animation.w.xt - border_horiz, 0.0);
+		*ht = fmax(con->animation.h.xt - border_vert, 0.0);
 	} else {
-		*wt = MAX(con->animation.w1 - border_horiz, 0.0);
-		*ht = MAX(con->animation.h1 - border_vert, 0.0);
+		*wt = fmax(con->animation.w.x1 - border_horiz, 0.0);
+		*ht = fmax(con->animation.h.x1 - border_vert, 0.0);
 	}
 }
 
@@ -1631,10 +1700,10 @@ void view_get_animation_scales(struct sway_view *view,
 		struct sway_container *con = view->container;
 		int border_horiz, border_vert;
 		container_get_borders(con, &border_horiz, &border_vert);
-		double w1 = con->animation.w1 - border_horiz;
-		double h1 = con->animation.h1 - border_vert;
-		double wt = con->animation.wt - border_horiz;
-		double ht = con->animation.ht - border_vert;
+		double w1 = con->animation.w.x1 - border_horiz;
+		double h1 = con->animation.h.x1 - border_vert;
+		double wt = con->animation.w.xt - border_horiz;
+		double ht = con->animation.h.xt - border_vert;
 		if (w1 > 0.0 && h1 > 0.0) {
 			*wscale = wt > 0.0 ? wt / w1 : 0.0;
 			*hscale = ht > 0.0 ? ht / h1 : 0.0;
@@ -1663,8 +1732,8 @@ static void clip_view(struct sway_view *view) {
 		struct wlr_box clip = {
 			.x = view->geometry.x,
 			.y = view->geometry.y,
-			.width = MAX(1, round(wt / content_scale)),
-			.height = MAX(1, round(ht / content_scale))
+			.width = (int) fmax(1.0, round(wt / content_scale)),
+			.height = (int) fmax(1.0, round(ht / content_scale))
 		};
 		wlr_scene_subsurface_tree_set_clip(&view->content_tree->node, &clip);
 	} else {
@@ -1702,7 +1771,6 @@ void view_reconfigure(struct sway_view *view) {
 }
 
 double view_get_total_scale(struct sway_view *view) {
-	double scale;
 	if (!view) {
 		return -1.0;
 	}
@@ -1710,22 +1778,10 @@ double view_get_total_scale(struct sway_view *view) {
 	if (!container) {
 		return -1.0;
 	}
-	if (container_is_fullscreen_or_child(container)) {
-		scale = -1.0;
-	} else {
-		struct sway_workspace *ws = container->pending.workspace;
-		if (ws && ws->output) {
-			if (animation_animating_output(ws->output->wlr_output)) {
-				scale = ws->animation.st;
-			} else {
-				scale = layout_scale_get(ws);
-			}
-		} else {
-			scale = -1.0;
-		}
-	}
+	// What is on screen, like the container position
+	double scale = layout_transform_container_scale(container, true);
 	if (view_is_content_scaled(view)) {
-		scale = (scale > 0.0f ? scale : 1.0) * view_get_content_scale(view);
+		scale *= view_get_content_scale(view);
 	}
 	return scale;
 }

@@ -2,6 +2,7 @@
 #include "sway/tree/root.h"
 #include "sway/tree/layout.h"
 #include "sway/output.h"
+#include "sway/tree/virtual_output.h"
 #include "sway/tree/workspace.h"
 #include "sway/scene_descriptor.h"
 #include "sway/desktop/animation.h"
@@ -52,9 +53,11 @@ static bool scene_node_at(struct wlr_scene_node *node, double lx, double ly,
 			struct sway_view *view = view_from_wlr_surface(scene_surface->surface);
 			if (view) {
 				total_scale = view_get_total_scale(view);
-				if (total_scale <= 0.0) {
-					total_scale = 1.0;
-				}
+			} else {
+				total_scale = view_get_surface_content_scale(scene_surface->surface);
+			}
+			if (total_scale <= 0.0) {
+				total_scale = 1.0;
 			}
 		}
 
@@ -124,11 +127,19 @@ static bool scene_workspace_data(struct wlr_scene_node *node, struct wlr_scene_w
 	if (workspace) {
 		// Use the animated values; they are equal to the targets when no
 		// overview animation is running.
-		data->x = workspace->jump.anim.x;
-		data->y = workspace->jump.anim.y;
-		data->width = workspace->jump.anim.w;
-		data->height = workspace->jump.anim.h;
-		data->scale = workspace->jump.anim.s;
+		data->x = workspace->jump.anim.x.xt;
+		data->y = workspace->jump.anim.y.xt;
+		data->width = workspace->jump.anim.w.xt;
+		data->height = workspace->jump.anim.h.xt;
+		data->scale = workspace->jump.anim.s.xt;
+		struct wlr_box *area = workspace_get_output_area(workspace);
+		data->wx = area ? area->x - workspace->output->lx : 0;
+		data->wy = area ? area->y - workspace->output->ly : 0;
+		data->wwidth = area ? area->width : 0;
+		data->wheight = area ? area->height : 0;
+		if (!virtual_output_is_visible(workspace->virtual_output)) {
+			data->width = data->height = 0;
+		}
 		return true;
 	}
 	return false;
@@ -153,7 +164,8 @@ static bool scene_view_data(struct wlr_surface *surface, struct wlr_scene_view_d
 		}
 		return true;
 	} else {
-		data->total_scale = data->wscale = data->hscale = 1.0;
+		data->total_scale = view_get_surface_content_scale(surface);
+		data->wscale = data->hscale = 1.0;
 	}
 	return false;
 }
@@ -206,26 +218,17 @@ static bool scene_node_get_parent_total_scale(struct wlr_scene_node *node, doubl
 }
 
 static double scene_view_content_scale(struct wlr_surface *surface) {
-	struct sway_view *view = view_from_wlr_surface(surface);
-	if (view) {
-		double scale = view_get_content_scale(view);
-		if (scale < 0.0) {
-			scale = 1.0;
-		}
-		return scale;
-	} else {
-		return 1.0;
-	}
+	return view_get_surface_content_scale(surface);
 }
 
 static bool scene_layer_surface_data(struct wlr_layer_surface_v1 *layer_surface,
 		struct wlr_scene_layer_surface_data *data) {
 	struct sway_layer_surface *surface = layer_surface->data;
 	if (surface && animation_animating()) {
-		data->x = surface->animation.xt;
-		data->y = surface->animation.yt;
-		data->width = surface->animation.wt;
-		data->height = surface->animation.ht;
+		data->x = surface->animation.x.xt;
+		data->y = surface->animation.y.xt;
+		data->width = surface->animation.w.xt;
+		data->height = surface->animation.h.xt;
 		return true;
 	} else {
 		data->x = surface->pending.x;
@@ -242,6 +245,10 @@ static void animate(struct wlr_output *output) {
 	}
 }
 
+static bool output_needs_frame(struct wlr_output *output) {
+	return animation_animating_output(output);
+}
+
 const struct wlr_scene_callbacks scroll_scene_cbs = {
 	.fullscreen_global_enabled = scene_fullscreen_global_enabled,
 	.overview_workspaces_enabled = scene_overview_workspaces_enabled,
@@ -252,4 +259,5 @@ const struct wlr_scene_callbacks scroll_scene_cbs = {
 	.view_content_scale = scene_view_content_scale,
 	.layer_surface_data = scene_layer_surface_data,
 	.animate = animate,
+	.output_needs_frame = output_needs_frame,
 };

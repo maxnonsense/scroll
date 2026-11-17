@@ -1,5 +1,6 @@
 #include <float.h>
 #include <libevdev/libevdev.h>
+#include <math.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_tablet_v2.h>
@@ -15,6 +16,7 @@
 #include "sway/scene_descriptor.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
+#include "sway/tree/virtual_output.h"
 #include "sway/log.h"
 #include "util.h"
 #if WLR_HAS_XWAYLAND
@@ -50,33 +52,25 @@ static enum wlr_edges find_edge(struct sway_container *cont,
 	if (layout_overview_workspaces_enabled()) {
 		layout_overview_workspaces_local_to_global(cont->pending.workspace, &cx, &cy);
 	}
-	double scale = layout_scale_enabled(cont->pending.workspace) ? layout_scale_get(cont->pending.workspace) : 1.0;
-	double x, y, yb;
-	if (container_is_floating(cont) && cont->pending.workspace && cont->pending.workspace->output) {
-		struct sway_output *output = cont->pending.workspace->output;
-		const double minx = output->lx + 0.5 * (1.0 - scale) * output->width;
-		x = minx + scale * (cont->pending.x - output->lx);
-		const double miny = output->ly + 0.5 * (1.0 - scale) * output->height;
-		y = miny + scale * (cont->pending.y - output->ly);
-		yb = miny + scale * (cont->pending.y + (cont->pending.border == B_NORMAL ? container_titlebar_height() : 0.0) - output->ly);
-	} else {
-		x = cont->pending.x;
-		y = cont->pending.y;
-		yb = cont->pending.y + (cont->pending.border == B_NORMAL ? scale * container_titlebar_height() : 0.0);
-	}
+	const double scale = layout_transform_container_scale(cont, true);
+	struct wlr_fbox box;
+	layout_container_screen_box(cont, true, &box);
+	const double x = box.x, y = box.y, width = box.width, height = box.height;
+	const double yb = y + (cont->pending.border == B_NORMAL ?
+		scale * container_titlebar_height() : 0.0);
 	enum wlr_edges edge = 0;
 	const double border_thickness = cont->pending.border_thickness > 0 ?
-		MAX(1.0, scale * cont->pending.border_thickness) : 0.0;
+		fmax(1.0, scale * cont->pending.border_thickness) : 0.0;
 	if (cont->pending.border_left && cx < x + border_thickness) {
 		edge |= WLR_EDGE_LEFT;
 	}
 	if (cont->pending.border_top && cy >= yb && cy < yb + border_thickness) {
 		edge |= WLR_EDGE_TOP;
 	}
-	if (cont->pending.border_right && cx >= x + scale * cont->pending.width - border_thickness) {
+	if (cont->pending.border_right && cx >= x + width - border_thickness) {
 		edge |= WLR_EDGE_RIGHT;
 	}
-	if (cont->pending.border_bottom && cy >= y + scale * cont->pending.height - border_thickness) {
+	if (cont->pending.border_bottom && cy >= y + height - border_thickness) {
 		edge |= WLR_EDGE_BOTTOM;
 	}
 
@@ -403,9 +397,11 @@ static void handle_button(struct sway_seat *seat, uint32_t time_msec,
 	if (cont && !is_floating_or_child && mod_pressed && mod_resize_btn_pressed &&
 			state == WL_POINTER_BUTTON_STATE_PRESSED) {
 		edge = 0;
-		edge |= cursor->cursor->x > cont->pending.x + cont->pending.width / 2 ?
+		struct wlr_fbox box;
+		layout_container_screen_box(cont, true, &box);
+		edge |= cursor->cursor->x > box.x + box.width / 2 ?
 			WLR_EDGE_RIGHT : WLR_EDGE_LEFT;
-		edge |= cursor->cursor->y > cont->pending.y + cont->pending.height / 2 ?
+		edge |= cursor->cursor->y > box.y + box.height / 2 ?
 			WLR_EDGE_BOTTOM : WLR_EDGE_TOP;
 
 		const char *image = NULL;
@@ -467,9 +463,11 @@ static void handle_button(struct sway_seat *seat, uint32_t time_msec,
 		if (mod_resize_btn_pressed) {
 			struct sway_container *floater = container_toplevel_ancestor(cont);
 			edge = 0;
-			edge |= cursor->cursor->x > floater->pending.x + floater->pending.width / 2 ?
+			struct wlr_fbox box;
+			layout_container_screen_box(floater, true, &box);
+			edge |= cursor->cursor->x > box.x + box.width / 2 ?
 				WLR_EDGE_RIGHT : WLR_EDGE_LEFT;
-			edge |= cursor->cursor->y > floater->pending.y + floater->pending.height / 2 ?
+			edge |= cursor->cursor->y > box.y + box.height / 2 ?
 				WLR_EDGE_BOTTOM : WLR_EDGE_TOP;
 			seat_set_focus_container(seat, floater);
 			seatop_begin_resize_floating(seat, floater, edge);
@@ -532,6 +530,24 @@ static void handle_button(struct sway_seat *seat, uint32_t time_msec,
  * Functions used by handle_pointer_motion  /
  *----------------------------------------*/
 
+static void container_viewport_geometry(struct sway_workspace *workspace,
+		struct sway_container *container, struct wlr_fbox *viewport) {
+	if (container->pending.fullscreen_layout != FULLSCREEN_DISABLED) {
+		struct wlr_box *area = workspace_get_output_area(workspace);
+		if (area) {
+			viewport->x = area->x;
+			viewport->y = area->y;
+			viewport->width = area->width;
+			viewport->height = area->height;
+			return;
+		}
+	}
+	viewport->x = workspace->x;
+	viewport->y = workspace->y;
+	viewport->width = workspace->width;
+	viewport->height = workspace->height;
+}
+
 static void check_focus_follows_mouse(struct sway_seat *seat,
 		struct seatop_default_event *e, struct sway_node *hovered_node) {
 	struct sway_node *focus = seat_get_focus(seat);
@@ -574,7 +590,9 @@ static void check_focus_follows_mouse(struct sway_seat *seat,
 		struct sway_output *focused_output = node_get_output(focus);
 		struct sway_output *hovered_output = node_get_output(hovered_node);
 		struct sway_workspace *hovered_ws = hovered_node->sway_workspace;
-		if (hovered_output != focused_output || hovered_ws->split.split != WORKSPACE_SPLIT_NONE) {
+		struct sway_workspace *focused_ws = seat_get_focused_workspace(seat);
+		if (hovered_output != focused_output ||
+				(focused_ws && focused_ws->virtual_output != hovered_ws->virtual_output)) {
 			seat_set_focus(seat, seat_get_focus_inactive(seat, hovered_node));
 			transaction_commit_dirty();
 		}
@@ -589,34 +607,34 @@ static void check_focus_follows_mouse(struct sway_seat *seat,
 		// If focus_follows_mouse is yes and the cursor got over the view due
 		// to, say, a workspace switch, we don't want to set the focus.
 		// But if focus_follows_mouse is "always", we do.
-		// For scroller, we also check if the cursor is in the gaps_out area,
-		// and if it is, we only change focus if clicked or FOLLOWS_ALWAYS.
-		struct sway_container *container = hovered_node->sway_container;
-		struct sway_workspace *ws = container->pending.workspace;
-		// Check if the hovered_node is fully wihin the viewport if FOLLOWS_FULL
-		bool valid_focus = true;
-		if (config->focus_follows_mouse == FOLLOWS_FULL && !container_is_floating(container)) {
-			float scale = layout_scale_enabled(ws) ? layout_scale_get(ws) : 1.0f;
-			if (container->pending.x < ws->x ||
-				container->pending.x + container->pending.width * scale > ws->x + ws->width ||
-				container->pending.y < ws->y ||
-				container->pending.y + container->pending.height * scale > ws->y + ws->height) {
-				valid_focus = false;
+		if (config->focus_follows_mouse != FOLLOWS_ALWAYS) {
+			if (hovered_node == e->previous_node) {
+				return;
+			}
+			struct sway_container *container = hovered_node->sway_container;
+			struct sway_workspace *ws = container->pending.workspace;
+			struct wlr_fbox geometry;
+			bool is_floating = container_is_floating(container);
+			container_current_geometry(container, &geometry);
+			if (!is_floating &&	(geometry.x >= ws->x + ws->width ||
+					geometry.x + geometry.width <= ws->x ||
+					geometry.y >= ws->y + ws->height ||
+					geometry.y + geometry.height <= ws->y)) {
+				return;
+			} else if (config->focus_follows_mouse == FOLLOWS_FULL && !is_floating &&
+					   !container_is_fullscreen_or_child(container)) {
+				struct wlr_fbox viewport;
+				container_viewport_geometry(ws, container, &viewport);
+				if (geometry.x < viewport.x ||
+						geometry.x + geometry.width > viewport.x + viewport.width ||
+						geometry.y < viewport.y ||
+						geometry.y + geometry.height  > viewport.y + viewport.height) {
+					return;
+				}
 			}
 		}
-		double cx = seat->cursor->cursor->x;
-		double cy = seat->cursor->cursor->y;
-		if (layout_overview_workspaces_enabled()) {
-			layout_overview_workspaces_local_to_global(ws, &cx, &cy);
-		}
-		bool in_gaps = cx < ws->x || cx > ws->x + ws->width || cy < ws->y || cy > ws->y + ws->height ?
-			true : false;
-		valid_focus = valid_focus && !in_gaps;
-		if ((hovered_node != e->previous_node && valid_focus) ||
-				config->focus_follows_mouse == FOLLOWS_ALWAYS) {
-			seat_set_focus(seat, hovered_node);
-			transaction_commit_dirty();
-		}
+		seat_set_focus(seat, hovered_node);
+		transaction_commit_dirty();
 	}
 }
 

@@ -8,6 +8,7 @@
 #include "sway/tree/view.h"
 #include "sway/tree/container.h"
 #include "sway/tree/workspace.h"
+#include "sway/tree/virtual_output.h"
 #include "sway/tree/node.h"
 #include "sway/output.h"
 #include "sway/desktop/animation.h"
@@ -327,6 +328,7 @@ static int scroll_json_to_lua(lua_State *L) {
 	if (str) {
 		struct json_object *obj = json_tokener_parse(str);
 		json_to_lua(L, obj);
+		json_object_put(obj);
 	} else {
 		lua_pushnil(L);
 	}
@@ -363,11 +365,8 @@ static int scroll_animations_set_enabled(lua_State *L) {
 	return 0;
 }
 
-static int scroll_command_error(lua_State *L, const char *error) {
-	lua_createtable(L, 1, 0);
-	lua_pushstring(L, error);
-	lua_rawseti(L, -2, 1);
-	return 1;
+static void command_error(lua_State *L, const char *error) {
+	luaL_error(L, "%s", error);
 }
 
 static struct sway_node *lua_to_node(lua_State *L, int index) {
@@ -429,11 +428,32 @@ void lua_command_data_create() {
 	config->lua.command_data = luaL_ref(config->lua.state, LUA_REGISTRYINDEX);
 }
 
-// scroll.command(container|workspace|nil, command)
+// scroll.command(container|workspace|nil, command, [opts])
 static int scroll_command(lua_State *L) {
 	int argc = lua_gettop(L);
 	if (argc < 2) {
-		return scroll_command_error(L, "Error: scroll_command() received a wrong number of parameters");
+		command_error(L, "Error: scroll.command() received a wrong number of arguments");
+		return 0;
+	}
+	bool commit;
+	if (argc >= 3) {
+		if (!lua_istable(L, 3)) {
+			command_error(L, "Error: scroll.command() 'opts' argument should be a table");
+			return 0;
+		}
+		int ctype = lua_getfield(L, 3, "commit");
+		if (ctype == LUA_TBOOLEAN) {
+			commit = lua_toboolean(L, 4);
+		} else if (ctype == LUA_TNIL){
+			commit = true;
+		} else {
+			lua_pop(L, 1);
+			command_error(L, "Error: scroll.command() 'opts.commit' argument should be boolean");
+			return 0;
+		}
+		lua_pop(L, 1);
+	} else {
+		commit = true;
 	}
 	struct sway_container *container = NULL;
 	struct sway_workspace *workspace = NULL;
@@ -442,19 +462,22 @@ static int scroll_command(lua_State *L) {
 	if (!lua_isnil(L, 1)) {
 		struct sway_node *node = lua_to_node(L, 1);
 		if (!node) {
-			return scroll_command_error(L, "Error: scroll_command() received a parameter that does not exist or is invalid");
+			command_error(L, "Error: scroll.command() received an argument that does not exist or is invalid");
+			return 0;
 		}
 		if (node->type == N_CONTAINER) {
 			container = node->sway_container;
 			if (!container->view) {
-				return scroll_command_error(L, "Error: scroll_command() received a container parameter that does not have a view");
+				command_error(L, "Error: scroll.command() received a container argument that does not have a view");
+				return 0;
 			}
 			seat = NULL;
 		} else if (node->type == N_WORKSPACE) {
 			workspace = node->sway_workspace;
 			seat_set_raw_focus(seat, &workspace->node);
 		} else {
-			return scroll_command_error(L, "Error: scroll_command() received a parameter that is neither a container nor a workspace");
+			command_error(L, "Error: scroll.command() received an argument that is neither a container nor a workspace");
+			return 0;
 		}
 	} else {
 		seat = NULL;
@@ -477,7 +500,9 @@ static int scroll_command(lua_State *L) {
 	}
 	list_free_items_and_destroy(results);
 	free(cmd);
-	transaction_commit_dirty();
+	if (commit) {
+		transaction_commit_dirty();
+	}
 
 	// Lua callback: "command_end" only applies to commands executed from Lua scripts
 	for (int i = 0; i < config->lua.cbs_command_end->length; ++i) {
@@ -555,6 +580,12 @@ static int scroll_focused_container(lua_State *L) {
 	struct sway_node *node = get_focused_node();
 	struct sway_container *container = (node && node->type == N_CONTAINER) ?
 		node->sway_container : NULL;
+	lua_push_node(L, container ? &container->node : NULL);
+	return 1;
+}
+
+static int scroll_context_container(lua_State *L) {
+	struct sway_container *container = config->lua.context_container;
 	lua_push_node(L, container ? &container->node : NULL);
 	return 1;
 }
@@ -925,7 +956,11 @@ static int scroll_container_get_opacity(lua_State *L) {
 		lua_pushnil(L);
 		return 1;
 	}
-	lua_pushnumber(L, container->pending.alpha);
+	double alpha = container->pending.alpha;
+	if (container->animation.a.animating) {
+		alpha = container->animation.a.xt;
+	}
+	lua_pushnumber(L, alpha);
 	return 1;
 }
 
@@ -1068,9 +1103,9 @@ static int scroll_container_get_animated_geometry(lua_State *L) {
 	}
 
 	if (animation_animating()) {
-		lua_pushnumber(L, container->animation.wt);
+		lua_pushnumber(L, container->animation.w.xt);
 		lua_setfield(L, -2, "width");
-		lua_pushnumber(L, container->animation.ht);
+		lua_pushnumber(L, container->animation.h.xt);
 		lua_setfield(L, -2, "height");
 	} else {
 		lua_pushnumber(L, container->current.width);
@@ -1081,6 +1116,32 @@ static int scroll_container_get_animated_geometry(lua_State *L) {
 	return 1;
 }
 
+static int scroll_container_get_animated_values(lua_State *L) {
+	int argc = lua_gettop(L);
+	if (argc == 0) {
+		lua_pushnil(L);
+		return 1;
+	}
+	struct sway_container *container = lua_to_container(L, -1);
+	if (!container) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_createtable(L, 0, 4);
+	lua_pushnumber(L, container->animation.x.xt);
+	lua_setfield(L, -2, "x");
+	lua_pushnumber(L, container->animation.y.xt);
+	lua_setfield(L, -2, "y");
+	lua_pushnumber(L, container->animation.w.xt);
+	lua_setfield(L, -2, "width");
+	lua_pushnumber(L, container->animation.h.xt);
+	lua_setfield(L, -2, "height");
+	lua_pushboolean(L, container->animation.x.animating ||
+		container->animation.y.animating || container->animation.w.animating ||
+		container->animation.h.animating);
+	lua_setfield(L, -2, "animating");
+	return 1;
+}
 
 static int scroll_container_get_fullscreen_mode(lua_State *L) {
 	int argc = lua_gettop(L);
@@ -1426,6 +1487,9 @@ static int scroll_workspace_get_mode(lua_State *L) {
 	lua_pushboolean(L, layout_modifiers_get_center_vertical(workspace) ? 1 : 0);
 	lua_setfield(L, -2, "center_vertical");
 
+	lua_pushboolean(L, layout_modifiers_get_floating(workspace) ? 1 : 0);
+	lua_setfield(L, -2, "floating");
+
 	return 1;
 }
 
@@ -1496,6 +1560,11 @@ static int scroll_workspace_set_mode(lua_State *L) {
 
 	if (lua_getfield(L, 2, "center_vertical") == LUA_TBOOLEAN) {
 		layout_modifiers_set_center_vertical(workspace, lua_toboolean(L, 3));
+	}
+	lua_pop(L, 1);
+
+	if (lua_getfield(L, 2, "floating") == LUA_TBOOLEAN) {
+		layout_modifiers_set_floating(workspace, lua_toboolean(L, 3));
 	}
 	lua_pop(L, 1);
 
@@ -1599,52 +1668,6 @@ static int scroll_workspace_get_pin(lua_State *L) {
 	return 1;
 }
 
-static int scroll_workspace_get_split(lua_State *L) {
-	int argc = lua_gettop(L);
-	if (argc == 0) {
-		lua_createtable(L, 0, 0);
-		return 1;
-	}
-	struct sway_workspace *workspace = lua_to_workspace(L, -1);
-	if (!workspace) {
-		lua_createtable(L, 0, 0);
-		return 1;
-	}
-	lua_newtable(L);
-	switch (workspace->split.split) {
-	case WORKSPACE_SPLIT_NONE:
-	case WORKSPACE_SPLIT_HORIZONTAL:
-	case WORKSPACE_SPLIT_VERTICAL:
-	default:
-		lua_pushstring(L, "none");
-		break;
-	case WORKSPACE_SPLIT_TOP:
-		lua_pushstring(L, "top");
-		break;
-	case WORKSPACE_SPLIT_BOTTOM:
-		lua_pushstring(L, "bottom");
-		break;
-	case WORKSPACE_SPLIT_LEFT:
-		lua_pushstring(L, "left");
-		break;
-	case WORKSPACE_SPLIT_RIGHT:
-		lua_pushstring(L, "right");
-		break;
-	}
-	lua_setfield(L, -2, "split");
-
-	lua_pushnumber(L, workspace->split.fraction);
-	lua_setfield(L, -2, "fraction");
-
-	lua_pushinteger(L, workspace->split.gap);
-	lua_setfield(L, -2, "gap");
-
-	lua_push_node(L, workspace->split.sibling ? &workspace->split.sibling->node : NULL);
-	lua_setfield(L, -2, "sibling");
-
-	return 1;
-}
-
 static int scroll_scratchpad_get_containers(lua_State *L) {
 	lua_checkstack(L, root->scratchpad->length + STACK_MIN);
 	lua_createtable(L, root->scratchpad->length, 0);
@@ -1691,6 +1714,91 @@ static int scroll_output_get_active_workspace(lua_State *L) {
 	struct sway_output *output = lua_to_output(L, -1);
 	lua_push_node(L, (output && output->current.active_workspace) ?
 			&output->current.active_workspace->node : NULL);
+	return 1;
+}
+
+static void lua_push_box(lua_State *L, const struct wlr_box *box) {
+	lua_createtable(L, 0, 4);
+	lua_pushinteger(L, box->x);
+	lua_setfield(L, -2, "x");
+	lua_pushinteger(L, box->y);
+	lua_setfield(L, -2, "y");
+	lua_pushinteger(L, box->width);
+	lua_setfield(L, -2, "width");
+	lua_pushinteger(L, box->height);
+	lua_setfield(L, -2, "height");
+}
+
+static int scroll_output_get_virtual_outputs(lua_State *L) {
+	int argc = lua_gettop(L);
+	struct sway_output *output = argc ? lua_to_output(L, -1) : NULL;
+	lua_createtable(L, 0, 0);
+	if (!output || !output->virtual_outputs) {
+		return 1;
+	}
+
+	struct sway_virtual_output *active = output_virtual_outputs_get_active(output);
+	int count = 0;
+	for (int i = 0; i < output->virtual_outputs->length; ++i) {
+		struct sway_virtual_output *vo = output->virtual_outputs->items[i];
+		if (!vo || vo->children[0]) {
+			continue;
+		}
+		int nworkspaces = vo->workspaces ? vo->workspaces->length : 0;
+		if (!lua_checkstack(L, STACK_MIN + 8)) {
+			break;
+		}
+
+		lua_createtable(L, 0, 10);
+		lua_pushstring(L, vo->name ? vo->name : "");
+		lua_setfield(L, -2, "name");
+		lua_pushboolean(L, virtual_output_is_visible(vo));
+		lua_setfield(L, -2, "visible");
+		lua_pushboolean(L, vo == active);
+		lua_setfield(L, -2, "active");
+
+		lua_push_box(L, &vo->output_area);
+		lua_setfield(L, -2, "rect");
+		lua_push_box(L, &vo->split_area);
+		lua_setfield(L, -2, "split_rect");
+		lua_push_box(L, &vo->usable_area);
+		lua_setfield(L, -2, "usable_rect");
+
+		struct sway_workspace *active_ws =
+			virtual_output_get_active_workspace(vo);
+		lua_push_node(L, active_ws ? &active_ws->node : NULL);
+		lua_setfield(L, -2, "active_workspace");
+
+		// As in the rest of the Lua API, workspaces are returned as node IDs.
+		lua_createtable(L, nworkspaces, 0);
+		int n = 0;
+		for (int j = 0; j < nworkspaces; ++j) {
+			struct sway_workspace *ws = vo->workspaces->items[j];
+			if (!ws) {
+				continue;
+			}
+			lua_push_node(L, &ws->node);
+			lua_rawseti(L, -2, ++n);
+		}
+		lua_setfield(L, -2, "workspaces");
+
+		lua_createtable(L, nworkspaces, 0);
+		n = 0;
+		for (int j = 0; j < nworkspaces; ++j) {
+			struct sway_workspace *ws = vo->workspaces->items[j];
+			if (!ws) {
+				continue;
+			}
+			lua_pushstring(L, ws->name ? ws->name : "");
+			lua_rawseti(L, -2, ++n);
+		}
+		lua_setfield(L, -2, "workspace_names");
+
+		lua_pushboolean(L, output->maximize_virtual_output);
+		lua_setfield(L, -2, "maximized");
+
+		lua_rawseti(L, -2, ++count);
+	}
 	return 1;
 }
 
@@ -1937,6 +2045,7 @@ static luaL_Reg const scroll_lib[] = {
 	{ "node_get_type", scroll_node_get_type },
 	{ "focused_view", scroll_focused_view },
 	{ "focused_container", scroll_focused_container },
+	{ "context_container", scroll_context_container },
 	{ "focused_workspace", scroll_focused_workspace },
 	{ "urgent_view", scroll_urgent_view },
 	{ "view_mapped", scroll_view_mapped },
@@ -1965,6 +2074,7 @@ static luaL_Reg const scroll_lib[] = {
 	{ "container_get_height", scroll_container_get_height },
 	{ "container_get_geometry", scroll_container_get_geometry },
 	{ "container_get_animated_geometry", scroll_container_get_animated_geometry },
+	{ "container_get_animated_values", scroll_container_get_animated_values },
 	{ "container_get_fullscreen_mode", scroll_container_get_fullscreen_mode },
 	{ "container_get_fullscreen_app_mode", scroll_container_get_fullscreen_app_mode },
 	{ "container_get_fullscreen_view_mode", scroll_container_get_fullscreen_view_mode },
@@ -1986,10 +2096,10 @@ static luaL_Reg const scroll_lib[] = {
 	{ "workspace_get_height", scroll_workspace_get_height },
 	{ "workspace_get_output", scroll_workspace_get_output },
 	{ "workspace_get_pin", scroll_workspace_get_pin },
-	{ "workspace_get_split", scroll_workspace_get_split },
 	{ "output_get_enabled", scroll_output_get_enabled },
 	{ "output_get_name", scroll_output_get_name },
 	{ "output_get_active_workspace", scroll_output_get_active_workspace },
+	{ "output_get_virtual_outputs", scroll_output_get_virtual_outputs },
 	{ "output_get_workspaces", scroll_output_get_workspaces },
 	{ "root_get_outputs", scroll_root_get_outputs },
 	{ "scratchpad_get_containers", scroll_scratchpad_get_containers },

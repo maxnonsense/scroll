@@ -1,3 +1,4 @@
+#include <math.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/util/edges.h>
 #include "sway/commands.h"
@@ -75,6 +76,13 @@ static void handle_pointer_motion(struct sway_seat *seat, uint32_t time_msec) {
 	int amount_y = 0;
 	int moved_x = seat->cursor->cursor->x - e->ref_lx;
 	int moved_y = seat->cursor->cursor->y - e->ref_ly;
+	if (e->con->pending.workspace) {
+		// The pointer moves in screen pixels, the container in layout units
+		const double scale =
+			layout_transform_workspace_scale(e->con->pending.workspace, true);
+		moved_x = round(moved_x / scale);
+		moved_y = round(moved_y / scale);
+	}
 
 	if (e->edge_x) {
 		if (e->edge_x & WLR_EDGE_LEFT) {
@@ -145,8 +153,8 @@ void seatop_begin_resize_tiling(struct sway_seat *seat,
 		struct sway_workspace *workspace = e->con->pending.workspace;
 		if (workspace) {
 			const int gaps = workspace->gaps_inner * 2;
-			e->max_width = MIN(e->max_width, workspace->width - gaps);
-			e->max_height = MIN(e->max_height, workspace->height - gaps);
+			e->max_width = fmin(e->max_width, workspace->width - gaps);
+			e->max_height = fmin(e->max_height, workspace->height - gaps);
 		}
 	}
 

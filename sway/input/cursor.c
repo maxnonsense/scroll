@@ -31,6 +31,7 @@
 #include "sway/tree/root.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
+#include "sway/tree/virtual_output.h"
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "sway/desktop/transaction.h"
 
@@ -102,38 +103,7 @@ struct sway_node *node_at_coords(
 			}
 
 			if (con && (!con->view || con->view->surface)) {
-				// Verify cursor is really inside the container. wlr_scene_node_at()
-				// may send false positives because it uses the size of the buffer
-				// but the coordinates are displaced by the border
-				double x, y, width, height;
-				struct sway_workspace *ws = con->pending.workspace;
-				// This will be false if not scaled, or ws is NULL
-				bool scaled = layout_scale_enabled(ws);
-				if (!scaled) {
-					x = con->pending.x;
-					y = con->pending.y;
-					width = con->pending.width;
-					height = con->pending.height;
-				} else {
-					float scale = layout_scale_get(ws);
-					width = scale * con->pending.width;
-					height = scale * con->pending.height;
-					if (con->view && !con->pending.parent) {
-						// Floating window are special in scaled workspaces, because
-						// the virtual viewport is centered for them
-						const double minx = ws->output->lx + 0.5 * (1.0 - scale) * ws->output->width;
-						x = minx + scale * (con->pending.x - ws->output->lx);
-						const double miny = ws->output->ly + 0.5 * (1.0 - scale) * ws->output->height;
-						y = miny + scale * (con->pending.y - ws->output->ly);
-					} else {
-						x = con->pending.x;
-						y = con->pending.y;
-					}
-				}
-				if (lx >= x && lx < x + width && ly >= y && ly < y + height) {
-					return &con->node;
-				}
-				return NULL;
+				return &con->node;
 			}
 
 			if (scene_descriptor_try_get(current, SWAY_SCENE_DESC_LAYER_SHELL)) {
@@ -176,17 +146,13 @@ struct sway_node *node_at_coords(
 		return NULL;
 	}
 
-	struct sway_workspace *ws = output_get_active_workspace(output);
+	// The pointer may be over a different virtual output of this physical
+	// output. Virtual outputs behave like real outputs here.
+	struct sway_virtual_output *vo = output_virtual_output_at_coords(output, lx, ly);
+	struct sway_workspace *ws = vo ? virtual_output_get_active_workspace(vo) :
+		output_get_active_workspace(output);
 	if (!ws) {
 		return NULL;
-	}
-	if (ws->split.split != WORKSPACE_SPLIT_NONE) {
-		// We may be hovering over the other workspace of the split
-		struct sway_workspace *sibling = ws->split.sibling;
-		if (lx >= sibling->split.output_area.x && lx < sibling->split.output_area.x + sibling->split.output_area.width &&
-			ly >= sibling->split.output_area.y && ly < sibling->split.output_area.y + sibling->split.output_area.height) {
-			return &sibling->node;
-		}
 	}
 
 	return &ws->node;
@@ -970,8 +936,6 @@ static void handle_constraint_commit(struct wl_listener *listener,
 		void *data) {
 	struct sway_cursor *cursor =
 		wl_container_of(listener, cursor, constraint_commit);
-	struct wlr_pointer_constraint_v1 *constraint = cursor->active_constraint;
-	assert(constraint->surface == data);
 
 	check_constraint_region(cursor);
 }
@@ -1290,18 +1254,13 @@ void cursor_warp_to_container(struct sway_cursor *cursor,
 	}
 
 	struct wlr_box box;
-	container_get_box(container, &box);
-	struct sway_workspace *workspace = container->pending.workspace;
-	float scale = layout_scale_enabled(workspace) ? layout_scale_get(workspace) : 1.0f;
-	box.width *= scale;
-	box.height *= scale;
-	if (!force && wlr_box_contains_point(&box, cursor->cursor->x,
-			cursor->cursor->y)) {
+	layout_container_screen_wlr_box(container, false, &box);
+	if (!force && wlr_box_contains_point(&box, cursor->cursor->x, cursor->cursor->y)) {
 		return;
 	}
 
-	double x = container->pending.x + scale * container->pending.width / 2.0;
-	double y = container->pending.y + scale * container->pending.height / 2.0;
+	const double x = box.x + 0.5 * box.width;
+	const double y = box.y + 0.5 * box.height;
 
 	wlr_cursor_warp(cursor->cursor, NULL, x, y);
 	cursor_unhide(cursor);
@@ -1422,7 +1381,7 @@ static void warp_to_constraint_cursor_hint(struct sway_cursor *cursor) {
 void handle_constraint_destroy(struct wl_listener *listener, void *data) {
 	struct sway_pointer_constraint *sway_constraint =
 		wl_container_of(listener, sway_constraint, destroy);
-	struct wlr_pointer_constraint_v1 *constraint = data;
+	struct wlr_pointer_constraint_v1 *constraint = sway_constraint->constraint;
 	struct sway_cursor *cursor = sway_constraint->cursor;
 
 	wl_list_remove(&sway_constraint->set_region.link);

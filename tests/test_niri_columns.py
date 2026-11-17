@@ -313,3 +313,100 @@ def test_overview_click_recenters(scroll_compositor: ScrollInstance) -> None:
             inst.cmd("scale_workspaces disable")
             inst.wait_for_idle()
             assert inst.proc.poll() is None
+
+
+def _wait_animations(inst: ScrollInstance, timeout: float = 3.0) -> None:
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not inst.execute_lua("return scroll.animating()"):
+            break
+        time.sleep(0.05)
+    # Let the idle handler that tears the overview down run
+    time.sleep(0.1)
+    inst.wait_for_idle()
+
+
+def test_scale_workspaces_animated(scroll_compositor_factory) -> None:
+    """With animations enabled, the overview zooms out and in, and once the
+    closing animation ends the overview is fully torn down (input is not
+    mapped through the overview anymore)."""
+    config = (
+        "workspace 1\nanimations enabled yes\nanimations overview yes 200\n"
+    )
+    with scroll_compositor_factory(config) as inst:
+        with wayland_client(inst, "w1"):
+            wait_for_client_map(inst, "w1")
+            inst.cmd("workspace 2")
+            with wayland_client(inst, "w2"):
+                wait_for_client_map(inst, "w2")
+                _wait_animations(inst)
+
+                res = inst.cmd("scale_workspaces enable")
+                assert res and res[0]["success"]
+                assert inst.execute_lua("return scroll.animating()") is True
+                _wait_animations(inst)
+
+                # In the overview, the top strip is workspace 1
+                inst.cmd("seat - cursor set 640 30")
+                inst.cmd("seat - cursor press button1")
+                inst.cmd("seat - cursor release button1")
+                _wait_animations(inst)
+                assert _focused_workspace_name(inst.get_tree()) == "1"
+
+                inst.cmd("workspace 2")
+                res = inst.cmd("scale_workspaces disable")
+                assert res and res[0]["success"]
+                _wait_animations(inst)
+                assert inst.proc.poll() is None
+
+                # Overview closed: the same click stays on workspace 2
+                inst.cmd("seat - cursor set 640 30")
+                inst.cmd("seat - cursor press button1")
+                inst.cmd("seat - cursor release button1")
+                inst.wait_for_idle()
+                assert _focused_workspace_name(inst.get_tree()) == "2"
+
+                # Interrupt the closing animation by reopening it
+                inst.cmd("scale_workspaces enable")
+                _wait_animations(inst)
+                inst.cmd("scale_workspaces disable")
+                inst.cmd("scale_workspaces enable")
+                _wait_animations(inst)
+                inst.cmd("scale_workspaces disable")
+                _wait_animations(inst)
+                assert inst.proc.poll() is None
+                inst.cmd("seat - cursor set 640 30")
+                inst.cmd("seat - cursor press button1")
+                inst.cmd("seat - cursor release button1")
+                inst.wait_for_idle()
+                assert _focused_workspace_name(inst.get_tree()) == "2"
+
+
+def test_scale_workspaces_virtual_outputs(scroll_compositor: ScrollInstance) -> None:
+    """The overview works per virtual output when the output is split."""
+    inst = scroll_compositor
+    with wayland_client(inst, "w1"):
+        wait_for_client_map(inst, "w1")
+        res = inst.cmd("virtual_output split v 0.5")
+        assert res and res[0]["success"], f"Command failed: {res}"
+        inst.wait_for_idle()
+
+        res = inst.cmd("scale_workspaces enable")
+        assert res and res[0]["success"]
+        inst.wait_for_idle()
+        assert inst.proc.poll() is None, "Compositor crashed in overview"
+
+        for x in (100, 1180):
+            inst.cmd(f"seat - cursor set {x} 360")
+            inst.cmd("seat - cursor press button1")
+            inst.cmd("seat - cursor release button1")
+            inst.wait_for_idle()
+            assert inst.proc.poll() is None, "Compositor crashed on click"
+
+        res = inst.cmd("scale_workspaces disable")
+        assert res and res[0]["success"]
+        inst.cmd("virtual_output split reset")
+        inst.wait_for_idle()
+        assert inst.proc.poll() is None

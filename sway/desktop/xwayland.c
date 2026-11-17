@@ -52,12 +52,10 @@ static struct sway_view *get_node_coords(struct wlr_xwayland_surface *xsurface, 
 	if (view && view->container) {
 		struct sway_container *con = view->container;
 		struct sway_workspace *ws = con->pending.workspace;
-		double scale = -1.0;
-		double ws_scale = 1.0;
-		if (layout_scale_enabled(ws)) {
-			scale = layout_scale_get(ws);
-			ws_scale = scale;
-		}
+		// X11 views are screen position dependent
+		struct sway_layout_transform transform;
+		layout_transform_container_get(con, false, &transform);
+		double scale = transform.scale;
 		if (view_is_content_scaled(view)) {
 			float content_scale = view_get_content_scale(view);
 			scale = scale > 0.0 ? scale * content_scale : content_scale;
@@ -74,23 +72,10 @@ static struct sway_view *get_node_coords(struct wlr_xwayland_surface *xsurface, 
 			xsurf_y = xsurface->y;
 		}
 		if (scale > 0.0) {
-			x = con->pending.content_x + (xsurf_x - con->pending.content_x) * scale;
-			y = con->pending.content_y + (xsurf_y - con->pending.content_y) * scale;
-
-			if (container_is_floating(con)) {
-				// When we scale the workspace, this is how floating windows are
-				// manipulated in arrage_workspace_floating() to have their virtual
-				// workspace centered.
-				const double minx = ws->output->lx + 0.5 * ws->output->width * (1.0 - ws_scale);
-				const double miny = ws->output->ly + 0.5 * ws->output->height * (1.0 - ws_scale);
-				const double cx = minx + ws_scale * (con->pending.x - ws->output->lx);
-				const double cy = miny + ws_scale * (con->pending.y - ws->output->ly);
-				const double coffsetx = cx - con->pending.x;
-				const double coffsety = cy - con->pending.y;
-
-				x += coffsetx;
-				y += coffsety;
-			}
+			double cx = con->pending.content_x, cy = con->pending.content_y;
+			layout_transform_point(&transform, &cx, &cy);
+			x = cx + (xsurf_x - cx) * scale;
+			y = cy + (xsurf_y - cy) * scale;
 		} else {
 			x = xsurf_x;
 			y = xsurf_y;
@@ -371,6 +356,11 @@ static uint32_t configure(struct sway_view *view, double lx, double ly, int widt
 		return 0;
 	}
 
+	if (view->container) {
+		struct sway_layout_transform transform;
+		layout_transform_container_get(view->container, false, &transform);
+		layout_transform_point(&transform, &lx, &ly);
+	}
 	if (!config->xwayland_output_scale) {
 		if (view->container && view->container->pending.workspace) {
 			struct sway_output *output = view->container->pending.workspace->output;
@@ -535,6 +525,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 	bool new_size = new_geo.width != view->geometry.width ||
 			new_geo.height != view->geometry.height;
 
+	bool commit_client_transaction = false;
 	if (new_size) {
 		// The client changed its surface size in this commit. For floating
 		// containers, we resize the container to match. For tiling containers,
@@ -542,7 +533,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 		memcpy(&view->geometry, &new_geo, sizeof(struct wlr_box));
 		if (container_is_floating(view->container)) {
 			view_update_size(view);
-			transaction_commit_dirty_client();
+			commit_client_transaction = true;
 		}
 
 		view_center_and_clip_surface(view);
@@ -559,6 +550,11 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 		if (view->saved_surface_tree && !successful) {
 			view_send_frame_done(view);
 		}
+	}
+
+	// Commit here, so the floating window move animation isn't interrupted.
+	if (commit_client_transaction) {
+		transaction_commit_dirty_client();
 	}
 }
 

@@ -63,6 +63,8 @@ struct wlr_scene_workspace_data {
 	double x, y;
 	double width, height;
 	double scale;
+	double wx, wy; // workspace origin wrt physical output (for virtual outputs)
+	double wwidth, wheight; // size of the (virtual) output, clips the overview
 };
 
 struct wlr_scene_view_data {
@@ -88,6 +90,7 @@ struct wlr_scene_callbacks {
 	double (*view_content_scale)(struct wlr_surface *surface);
 	bool (*layer_surface_data)(struct wlr_layer_surface_v1 *layer_surface, struct wlr_scene_layer_surface_data *data);
 	void (*animate)(struct wlr_output *output);
+	bool (*output_needs_frame)(struct wlr_output *output);
 };
 
 enum wlr_scene_node_type {

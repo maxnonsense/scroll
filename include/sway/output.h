@@ -13,6 +13,7 @@
 
 struct sway_server;
 struct sway_container;
+struct sway_virtual_output;
 
 enum sway_layer_shell_type {
 	LAYER_SHELL_NONE = 0,
@@ -66,6 +67,10 @@ struct sway_output {
 	list_t *workspaces;
 	struct wl_list layer_surfaces; // sway_layer_surface.link
 
+	struct sway_virtual_output *root_virtual_output;
+	list_t *virtual_outputs; // struct sway_virtual_output
+	bool maximize_virtual_output;
+
 	struct sway_output_state current;
 
 	struct wl_listener layout_destroy;
@@ -83,8 +88,7 @@ struct sway_output {
 	struct wl_event_source *repaint_timer;
 
 	struct sway_scroller_output_options scroller_options;
-	uint32_t animation_id;  // id for the animation owning the scheduled frame
-	bool workspace_switching;
+	uint32_t animation_id;  // id of animation for this output, 0 if none
 
 	bool allow_tearing;
 	bool hdr;

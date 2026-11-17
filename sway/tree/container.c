@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <drm_fourcc.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <wayland-server-core.h>
@@ -19,6 +20,7 @@
 #include "sway/server.h"
 #include "sway/tree/arrange.h"
 #include "sway/tree/node.h"
+#include "sway/tree/virtual_output.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
 #include "sway/xdg_decoration.h"
@@ -26,7 +28,6 @@
 #include "list.h"
 #include "pango.h"
 #include "stringop.h"
-#include "util.h"
 
 static struct wlr_scene_decoration *alloc_decoration_node(struct wlr_scene_tree *parent,
 		struct sway_view *view, bool *failed) {
@@ -46,6 +47,27 @@ static struct wlr_scene_decoration *alloc_decoration_node(struct wlr_scene_tree 
 		*failed = true;
 	}
 	return decoration;
+}
+
+static void container_init_animation_variables(struct sway_container *con) {
+	animated_variable_init(&con->animation.x, con->current.x,
+		ANIMATED_VARIABLE_POSITION);
+	animated_variable_init(&con->animation.y, con->current.y,
+		ANIMATED_VARIABLE_POSITION);
+	animated_variable_init(&con->animation.w, con->current.width,
+		ANIMATED_VARIABLE_SIZE);
+	animated_variable_init(&con->animation.h, con->current.height,
+		ANIMATED_VARIABLE_SIZE);
+	animated_variable_init(&con->animation.a, con->current.alpha,
+		ANIMATED_VARIABLE_FADE);
+}
+
+static void container_release_animation_variables(struct sway_container *con) {
+	animated_variable_release(&con->animation.x);
+	animated_variable_release(&con->animation.y);
+	animated_variable_release(&con->animation.w);
+	animated_variable_release(&con->animation.h);
+	animated_variable_release(&con->animation.a);
 }
 
 struct sway_container *container_create(struct sway_view *view) {
@@ -99,6 +121,7 @@ struct sway_container *container_create(struct sway_view *view) {
 
 	if (failed) {
 		wlr_scene_node_destroy(&c->scene_tree->node);
+		node_map_remove(&c->node);
 		free(c);
 		return NULL;
 	}
@@ -111,6 +134,7 @@ struct sway_container *container_create(struct sway_view *view) {
 	c->pending.layout = L_NONE;
 	c->view = view;
 	c->current.alpha = c->pending.alpha = 1.0f;
+	container_init_animation_variables(c);
 	c->marks = create_list();
 	c->toggle_size.single = false;
 	c->toggle_size.state = TOGGLE_STATE_NONE;
@@ -360,11 +384,11 @@ void container_arrange_title_bar(struct sway_container *con) {
 			h_padding = width - config->titlebar_h_padding - marks_buffer_width;
 		}
 
-		h_padding = MAX(h_padding, config->titlebar_h_padding);
+		h_padding = fmax(h_padding, config->titlebar_h_padding);
 
-		double alloc_width = MIN(node->width,
+		double alloc_width = fmin(node->width,
 			width - h_padding - config->titlebar_h_padding);
-		alloc_width = MAX(alloc_width, 0);
+		alloc_width = fmax(alloc_width, 0.0);
 
 		sway_text_node_set_max_width(node, round(alloc_width));
 		wlr_scene_node_set_position(node->node,
@@ -384,11 +408,11 @@ void container_arrange_title_bar(struct sway_container *con) {
 			h_padding = config->titlebar_h_padding;
 		}
 
-		h_padding = MAX(h_padding, config->titlebar_h_padding);
+		h_padding = fmax(h_padding, config->titlebar_h_padding);
 
-		double alloc_width = MIN(node->width,
+		double alloc_width = fmin(node->width,
 			width - h_padding - config->titlebar_h_padding);
-		alloc_width = MAX(alloc_width, 0);
+		alloc_width = fmax(alloc_width, 0.0);
 
 		sway_text_node_set_max_width(node, round(alloc_width));
 		wlr_scene_node_set_position(node->node,
@@ -452,20 +476,36 @@ void container_update_marks(struct sway_container *con) {
 	free(buffer);
 }
 
-void container_update_title_bar(struct sway_container *con) {
-	if (!con->formatted_title) {
+void container_update_title_text(struct sway_container *con) {
+	if (!con->current.formatted_title || !*con->current.formatted_title) {
+		if (con->title_bar.title_text) {
+			wlr_scene_node_destroy(con->title_bar.title_text->node);
+			con->title_bar.title_text = NULL;
+		}
 		return;
 	}
 
-	struct border_colors *colors = container_get_current_colors(con);
+	if (!con->title_bar.title_text) {
+		struct border_colors *colors = container_get_current_colors(con);
+		con->title_bar.title_text = sway_text_node_create(con->title_bar.tree,
+			con->current.formatted_title, colors->text, config->pango_markup);
+	} else {
+		sway_text_node_set_text(con->title_bar.title_text,
+			con->current.formatted_title);
+	}
+}
 
+void container_update_title_bar(struct sway_container *con) {
 	if (con->title_bar.title_text) {
 		wlr_scene_node_destroy(con->title_bar.title_text->node);
 		con->title_bar.title_text = NULL;
 	}
 
-	con->title_bar.title_text = sway_text_node_create(con->title_bar.tree,
-		con->formatted_title, colors->text, config->pango_markup);
+	if (con->current.formatted_title && *con->current.formatted_title) {
+		struct border_colors *colors = container_get_current_colors(con);
+		con->title_bar.title_text = sway_text_node_create(con->title_bar.tree,
+			con->current.formatted_title, colors->text, config->pango_markup);
+	}
 
 	// we always have to remake these text buffers completely for text font
 	// changes etc...
@@ -487,9 +527,11 @@ void container_destroy(struct sway_container *con) {
 				"which is still referenced by transactions")) {
 		return;
 	}
+	container_release_animation_variables(con);
 	node_map_remove(&con->node);
 	free(con->title);
-	free(con->formatted_title);
+	free(con->pending.formatted_title);
+	free(con->current.formatted_title);
 	free(con->title_format);
 	list_free(con->pending.children);
 	list_free(con->current.children);
@@ -769,7 +811,7 @@ size_t container_build_representation(enum sway_container_layout layout,
 				identifier = view_get_app_id(child->view);
 			}
 		} else {
-			identifier = child->formatted_title;
+			identifier = child->pending.formatted_title;
 		}
 		if (identifier) {
 			len += strlen(identifier);
@@ -787,20 +829,17 @@ size_t container_build_representation(enum sway_container_layout layout,
 void container_update_representation(struct sway_container *con) {
 	if (!con->view) {
 		size_t len = parse_title_format(con, NULL);
-		free(con->formatted_title);
-		con->formatted_title = calloc(len + 1, sizeof(char));
-		if (!sway_assert(con->formatted_title,
-					"Unable to allocate title string")) {
-			return;
+		free(con->pending.formatted_title);
+		con->pending.formatted_title = NULL;
+		if (len) {
+			con->pending.formatted_title = calloc(len + 1, sizeof(char));
+			if (!sway_assert(con->pending.formatted_title,
+						"Unable to allocate title string")) {
+				return;
+			}
+			parse_title_format(con, con->pending.formatted_title);
 		}
-		parse_title_format(con, con->formatted_title);
-
-		if (con->title_bar.title_text) {
-			sway_text_node_set_text(con->title_bar.title_text, con->formatted_title);
-			container_arrange_title_bar(con);
-		} else {
-			container_update_title_bar(con);
-		}
+		node_set_dirty(&con->node);
 	}
 	if (con->pending.parent) {
 		container_update_representation(con->pending.parent);
@@ -852,7 +891,8 @@ void floating_calculate_constraints(int *min_width, int *max_width,
 
 }
 
-void floating_fix_coordinates(struct sway_container *con, struct wlr_box *old, struct wlr_box *new) {
+void floating_fix_coordinates(struct sway_container *con,
+		const struct wlr_fbox *old, const struct wlr_fbox *new) {
 	if (!old->width || !old->height) {
 		// Fall back to centering on the workspace.
 		container_floating_move_to_center(con);
@@ -1280,8 +1320,10 @@ void container_floating_translate(struct sway_container *con,
  * center.
  */
 struct sway_output *container_floating_find_output(struct sway_container *con) {
-	double center_x = con->pending.x + con->pending.width / 2;
-	double center_y = con->pending.y + con->pending.height / 2;
+	struct wlr_fbox screen;
+	layout_container_screen_box(con, false, &screen);
+	double center_x = screen.x + screen.width / 2;
+	double center_y = screen.y + screen.height / 2;
 	if (layout_overview_workspaces_enabled()) {
 		layout_overview_workspaces_global_to_local(con->pending.workspace, &center_x, &center_y);
 	}
@@ -1309,7 +1351,7 @@ struct sway_output *container_floating_find_output(struct sway_container *con) {
  * Find the workspace containing the center of the floating container.
  *
  * Use this function **only** for cases where the layout is in overview
- * workspaces and/or the workspace is a split workspace,
+ * workspaces and/or the physical output is split into virtual outputs.
  */
 static struct sway_workspace *container_floating_find_workspace(struct sway_output *output,
 		struct sway_container *con) {
@@ -1331,26 +1373,69 @@ static struct sway_workspace *container_floating_find_workspace(struct sway_outp
 				.width = workspace->jump.width,
 				.height = workspace->jump.height
 			};
-			if (workspace->split.split != WORKSPACE_SPLIT_NONE) {
-				workspace_box.x += (workspace->split.output_area.x - output->lx) * workspace->jump.width / output->width;
-				workspace_box.y += (workspace->split.output_area.y - output->ly) * workspace->jump.height / output->height;
-				workspace_box.width = workspace->jump.width * workspace->split.output_area.width / output->width;
-				workspace_box.height = workspace->jump.height * workspace->split.output_area.height / output->height;
+			struct wlr_box *area = workspace_get_output_area(workspace);
+			if (area && workspace_is_split_output(workspace)) {
+				workspace_box.x += (area->x - output->lx) * workspace->jump.width / output->width;
+				workspace_box.y += (area->y - output->ly) * workspace->jump.height / output->height;
+				workspace_box.width = workspace->jump.width * area->width / output->width;
+				workspace_box.height = workspace->jump.height * area->height / output->height;
 			}
 		} else {
-			workspace_box = workspace->split.output_area;
+			// Only the active workspace of a visible virtual output can be
+			// the destination of a floating container
+			struct sway_virtual_output *vo = workspace->virtual_output;
+			if (!vo || !virtual_output_is_visible(vo) ||
+					virtual_output_get_active_workspace(vo) != workspace) {
+				continue;
+			}
+			workspace_box = vo->output_area;
 		}
 		wlr_box_closest_point(&workspace_box, center_x, center_y,
 			&closest_x, &closest_y);
 		double x_dist = closest_x - center_x;
 		double y_dist = closest_y - center_y;
 		double distance = x_dist * x_dist + y_dist * y_dist;
-		if (distance < closest_distance) {
+		// Prefer the current workspace on an exact center-distance tie,
+		// else the first equal-distance workspace in sorted order wins
+		// and the window jumps to an unrelated, lower-ordered workspace.
+		if (distance < closest_distance ||
+				(distance == closest_distance &&
+				 workspace == con->pending.workspace)) {
 			closest_workspace = workspace;
 			closest_distance = distance;
 		}
 	}
 	return closest_workspace;
+}
+
+// Move the floating container from the layout coordinates of one workspace
+// to the other's, keeping its position on screen
+static void container_floating_rebase(struct sway_container *con,
+		struct sway_workspace *from, struct sway_workspace *to) {
+	if (!from || !to || !from->output || !to->output) {
+		return;
+	}
+	struct sway_layout_transform t_from, t_to;
+	layout_transform_workspace_get(from, false, &t_from);
+	layout_transform_workspace_get(to, false, &t_to);
+	if (t_from.scale == t_to.scale && t_from.x == t_to.x && t_from.y == t_to.y) {
+		return;
+	}
+	// Keep the center, which decides the output of the container
+	const double hw = 0.5 * con->pending.width, hh = 0.5 * con->pending.height;
+	double x = con->pending.x + hw, y = con->pending.y + hh;
+	layout_transform_point(&t_from, &x, &y);
+	layout_transform_point_inv(&t_to, &x, &y);
+	container_floating_translate(con, x - hw - con->pending.x,
+		y - hh - con->pending.y, false);
+	// Also the current position, so the animation starts from the right place
+	const double chw = 0.5 * con->current.width, chh = 0.5 * con->current.height;
+	x = con->current.x + chw;
+	y = con->current.y + chh;
+	layout_transform_point(&t_from, &x, &y);
+	layout_transform_point_inv(&t_to, &x, &y);
+	con->current.x = x - chw;
+	con->current.y = y - chh;
 }
 
 void container_floating_move_to(struct sway_container *con,
@@ -1370,8 +1455,7 @@ void container_floating_move_to(struct sway_container *con,
 	}
 	struct sway_workspace *new_workspace;
 	if (layout_overview_workspaces_enabled() ||
-		(old_workspace->split.split != WORKSPACE_SPLIT_NONE &&
-		 old_workspace->output == new_output)) {
+			output_has_multiple_visible_virtual_outputs(new_output)) {
 		new_workspace = container_floating_find_workspace(new_output, con);
 		if (!sway_assert(new_workspace, "Unable to find any workspace")) {
 			return;
@@ -1391,6 +1475,9 @@ void container_floating_move_to(struct sway_container *con,
 			// animation starts from the right place
 			layout_overview_workspaces_global_to_local(old_workspace, &con->current.x, &con->current.y);
 			layout_overview_workspaces_local_to_global(new_workspace, &con->current.x, &con->current.y);
+		} else {
+			// If the workspace transforms are different, modify the position
+			container_floating_rebase(con, old_workspace, new_workspace);
 		}
 		container_detach(con);
 		workspace_add_floating(new_workspace, con);
@@ -1404,7 +1491,7 @@ void container_floating_move_to(struct sway_container *con,
 			con->transform = output_box;
 		}
 		if (layout_overview_workspaces_enabled() ||
-			new_workspace->split.split != WORKSPACE_SPLIT_NONE) {
+				output_has_multiple_visible_virtual_outputs(new_output)) {
 			// Add the new workspace to the focus stack because for
 			// splits and overview workspaces it is not done automatically,
 			// as there is no change of output
@@ -1417,7 +1504,7 @@ void container_floating_move_to(struct sway_container *con,
 	} else if (!root->jumping) {
 		// Always keep some part of the floating window inside the workspace
 		struct sway_output *output = new_workspace->output;
-		const double MARGIN = MIN(output->width * 0.025, output->height * 0.025);
+		const double MARGIN = fmin(output->width * 0.025, output->height * 0.025);
 		const double dxmax = con->pending.x - (output->lx + output->width - MARGIN);
 		const double dymax = con->pending.y - (output->ly + output->height - MARGIN);
 		const double dxmin = con->pending.x + con->pending.width - (output->lx + MARGIN);
@@ -2348,21 +2435,58 @@ struct sway_container *container_get_by_id(size_t id) {
 		NULL;
 }
 
-bool container_in_viewport(struct sway_container *container) {
+static bool box_contains_box_axes(const struct wlr_box *bigger,
+		const struct wlr_box *smaller, uint32_t axes) {
+	if (wlr_box_empty(bigger) || wlr_box_empty(smaller)) {
+		return false;
+	}
+	if (axes & ALIGN_AXIS_H) {
+		if (smaller->x < bigger->x ||
+				smaller->x + smaller->width > bigger->x + bigger->width) {
+			return false;
+		}
+	}
+	if (axes & ALIGN_AXIS_V) {
+		if (smaller->y < bigger->y ||
+				smaller->y + smaller->height > bigger->y + bigger->height) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool container_axes_in_viewport(struct sway_container *container, uint32_t axes) {
 	struct sway_workspace *workspace = container->pending.workspace;
 	if (!workspace) {
 		return false;
 	}
 	struct wlr_box box_c, box_o;
-	container_get_box(container, &box_c);
-	float scale = layout_scale_enabled(workspace) ? layout_scale_get(workspace) : 1.0f;
-	box_c.width *= scale;
-	box_c.height *= scale;
+	layout_container_screen_wlr_box(container, false, &box_c);
 	bool floating = container_is_floating(container);
 	if (floating) {
 		root_get_box(root, &box_o);
 	} else {
-		output_get_box(workspace->output, &box_o);
+		struct wlr_box *area = workspace_get_output_area(workspace);
+		if (area) {
+			box_o = *area;
+		} else {
+			output_get_box(workspace->output, &box_o);
+		}
 	}
-	return wlr_box_contains_box(&box_o, &box_c);
+	return box_contains_box_axes(&box_o, &box_c, axes);
+}
+
+
+bool container_in_viewport(struct sway_container *container) {
+	return container_axes_in_viewport(container, ALIGN_AXIS_H | ALIGN_AXIS_V);
+}
+
+void container_current_geometry(struct sway_container *con, struct wlr_fbox *geometry) {
+	struct sway_workspace *ws = con->pending.workspace ?
+		con->pending.workspace : con->current.workspace;
+	layout_container_screen_box(con, true, geometry);
+	// Add the y offset if in the middle of a workspace switch
+	if (ws && !container_is_sticky_or_child(con)) {
+		geometry->y += workspace_switch_offset(ws);
+	}
 }

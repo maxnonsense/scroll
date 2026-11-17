@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wlr/backend.h>
@@ -32,8 +33,6 @@
 
 #define DMABUF_FEEDBACK_DEBOUNCE_FRAMES  30
 #define HIGHLIGHT_DAMAGE_FADEOUT_TIME   250
-
-#define MAX(a, b)  (((a) > (b)) ? (a) : (b))
 
 struct wlr_scene_tree *wlr_scene_tree_from_node(struct wlr_scene_node *node) {
 	assert(node->type == WLR_SCENE_NODE_TREE);
@@ -126,6 +125,10 @@ static void default_animate(struct wlr_output *output) {
 	return;
 }
 
+static bool default_output_needs_frame(struct wlr_output *output) {
+	return false;
+}
+
 struct wlr_scene_callbacks scene_cbs = {
 	.fullscreen_global_enabled = default_fullscreen_global_enabled,
 	.overview_workspaces_enabled = default_overview_workspaces_enabled,
@@ -136,6 +139,7 @@ struct wlr_scene_callbacks scene_cbs = {
 	.view_content_scale = default_view_content_scale,
 	.layer_surface_data = default_layer_surface_data,
 	.animate = default_animate,
+	.output_needs_frame = default_output_needs_frame,
 };
 
 struct wlr_scene *scene_node_get_root(struct wlr_scene_node *node) {
@@ -1929,17 +1933,25 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 		// node would be clipped away by rounding mismatches.
 		double node_width, node_height;
 		scene_node_get_size(node, &node_width, &node_height);
-		const int bx = ceil((entry->x - data->logical.x) * scale + dx);
-		const int by = ceil((entry->y - data->logical.y) * scale + dy);
+		const int bx = ceil((entry->x - data->logical.x - workspace_data.wx) * scale + dx);
+		const int by = ceil((entry->y - data->logical.y - workspace_data.wy) * scale + dy);
 		pixman_region32_union_rect(&render_region, &render_region, bx, by,
 			ceil(node_width * scale), ceil(node_height * scale));
 		// Clip vertically against the "mini-workspace"; horizontally allow
-		// the full output, so windows scrolled out of the viewport show at
-		// the sides of the mini-workspace. Allow one extra pixel at the
-		// bottom: the ceil-rounded node boxes can exceed the mini-workspace
-		// box by one pixel, and the border of the bottom window with it.
-		pixman_region32_intersect_rect(&render_region, &render_region, 0, dy,
-			data->logical.width, workspace_data.height + 1);
+		// the full (virtual) output, so windows scrolled out of the viewport
+		// show at the sides of the mini-workspace. Allow one extra pixel at
+		// the bottom: the ceil-rounded node boxes can exceed the
+		// mini-workspace box by one pixel, and the border of the bottom
+		// window with it.
+		if (workspace_data.height > 0) {
+			pixman_region32_intersect_rect(&render_region, &render_region,
+				workspace_data.wx, dy, workspace_data.wwidth, workspace_data.height + 1);
+			pixman_region32_intersect_rect(&render_region, &render_region,
+				workspace_data.wx, workspace_data.wy,
+				workspace_data.wwidth, workspace_data.wheight);
+		} else {
+			pixman_region32_clear(&render_region);
+		}
 	} else {
 		pixman_region32_copy(&render_region, &node->visible);
 		pixman_region32_translate(&render_region, -data->logical.x, -data->logical.y);
@@ -1959,8 +1971,8 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 	};
 	scene_node_get_size(node, &dst_fbox.width, &dst_fbox.height);
 	if (workspace) {
-		dst_fbox.x = ceil(dst_fbox.x * scale + dx);
-		dst_fbox.y = ceil(dst_fbox.y * scale + dy);
+		dst_fbox.x = ceil((dst_fbox.x - workspace_data.wx) * scale + dx);
+		dst_fbox.y = ceil((dst_fbox.y - workspace_data.wy) * scale + dy);
 		dst_fbox.width = ceil(dst_fbox.width * scale);
 		dst_fbox.height = ceil(dst_fbox.height * scale);
 	}
@@ -1970,10 +1982,14 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 	pixman_region32_init(&opaque);
 	scene_node_opaque_region(node, x, y, &opaque);
 	if (workspace) {
+		pixman_region32_translate(&opaque, -workspace_data.wx, -workspace_data.wy);
 		scale_region(&opaque, scale, false);
 		pixman_region32_translate(&opaque, dx, dy);
-		pixman_region32_intersect_rect(&opaque, &opaque, 0, dy,
-			data->logical.width, workspace_data.height);
+		pixman_region32_intersect_rect(&opaque, &opaque,
+			workspace_data.wx, dy, workspace_data.wwidth, workspace_data.height);
+		pixman_region32_intersect_rect(&opaque, &opaque,
+			workspace_data.wx, workspace_data.wy,
+			workspace_data.wwidth, workspace_data.wheight);
 	}
 	logical_to_buffer_coords(&opaque, data, false);
 	pixman_region32_subtract(&opaque, &render_region, &opaque);
@@ -2104,7 +2120,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			.object = object,
 			.border = scene_decoration->border,
 			.border_radius = round(scene_decoration->border_radius * data->scale * scale),
-			.border_width = MAX(1.0, round(scene_decoration->border_width * data->scale * scale)),
+			.border_width = fmax(1.0, round(scene_decoration->border_width * data->scale * scale)),
 			.border_top_color = {
 				.r = scene_decoration->border_top_color[0],
 				.g = scene_decoration->border_top_color[1],
@@ -2831,7 +2847,10 @@ static enum scene_direct_scanout_result scene_entry_try_direct_scanout(
 		return SCANOUT_CANDIDATE;
 	}
 
-	wlr_output_state_copy(state, &pending);
+	if (!wlr_output_state_copy(state, &pending)) {
+		wlr_output_state_finish(&pending);
+		return SCANOUT_CANDIDATE;
+	}
 	wlr_output_state_finish(&pending);
 
 	struct wlr_scene_output_sample_event sample_event = {
@@ -2847,7 +2866,8 @@ static enum scene_direct_scanout_result scene_entry_try_direct_scanout(
 bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output) {
 	return scene_output->output->needs_frame ||
 		!pixman_region32_empty(&scene_output->pending_commit_damage) ||
-		scene_output->gamma_lut_changed;
+		scene_output->gamma_lut_changed ||
+		scene_cbs.output_needs_frame(scene_output->output);
 }
 
 bool wlr_scene_output_commit(struct wlr_scene_output *scene_output,
@@ -2897,7 +2917,9 @@ static void scene_output_state_attempt_gamma(struct wlr_scene_output *scene_outp
 		return;
 	}
 
-	wlr_output_state_copy(state, &gamma_pending);
+	if (!wlr_output_state_copy(state, &gamma_pending)) {
+		scene_output->gamma_lut_changed = true;
+	}
 	wlr_output_state_finish(&gamma_pending);
 }
 

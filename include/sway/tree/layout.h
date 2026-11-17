@@ -2,6 +2,7 @@
 #define _SWAY_LAYOUT_H
 
 #include "sway/tree/container.h"
+#include <wlr/util/box.h>
 #include <wlr/util/edges.h>
 
 enum sway_layout_reorder {
@@ -34,11 +35,6 @@ enum sway_layout_fit_group {
 	FIT_TOBEG,
 };
 
-enum sway_layout_admit_direction {
-	ADMIT_LEFT,
-	ADMIT_RIGHT
-};
-
 enum sway_layout_insert {
 	INSERT_BEFORE,
 	INSERT_AFTER,
@@ -50,6 +46,12 @@ enum sway_layout_align {
 	ALIGN_NONE,
 	ALIGN_AUTO,
 	ALIGN_ALWAYS,
+};
+
+enum sway_layout_align_axis {
+	ALIGN_AXIS_NONE = 0,
+	ALIGN_AXIS_H = (1 << 0),
+	ALIGN_AXIS_V = (1 << 1)
 };
 
 enum sway_layout_pin {
@@ -104,6 +106,7 @@ struct sway_scroller {
 		bool focus;
 		bool center_horizontal;
 		bool center_vertical;
+		bool floating;
 	} modifiers;
 
 	enum sway_layout_overview overview;
@@ -122,6 +125,8 @@ struct sway_scroller {
 	} toggle_size;
 
 	enum sway_layout_align align;
+	uint32_t align_axes;
+	struct sway_container *align_container;
 };
 
 struct sway_scroller_modifiers {
@@ -140,6 +145,8 @@ struct sway_scroller_modifiers {
 	bool center_horizontal;
 	bool center_vertical_set;
 	bool center_vertical;
+	bool floating_set;
+	bool floating;
 };
 
 struct sway_scroller_output_options {
@@ -203,6 +210,7 @@ void layout_modifiers_set_focus(struct sway_workspace *workspace, bool focus);
 void layout_modifiers_set_center_horizontal(struct sway_workspace *workspace, bool center);
 void layout_modifiers_set_center_vertical(struct sway_workspace *workspace, bool center);
 void layout_modifiers_set_reorder(struct sway_workspace *workspace, enum sway_layout_reorder reorder);
+void layout_modifiers_set_floating(struct sway_workspace *workspace, bool floating);
 
 enum sway_container_layout layout_modifiers_get_mode(struct sway_workspace *workspace);
 enum sway_layout_insert layout_modifiers_get_insert(struct sway_workspace *workspace);
@@ -211,9 +219,18 @@ bool layout_modifiers_get_focus(struct sway_workspace *workspace);
 bool layout_modifiers_get_center_horizontal(struct sway_workspace *workspace);
 bool layout_modifiers_get_center_vertical(struct sway_workspace *workspace);
 enum sway_layout_reorder layout_modifiers_get_reorder(struct sway_workspace *workspace);
+bool layout_modifiers_get_floating(struct sway_workspace *workspace);
 
 void layout_workspace_set_align(struct sway_workspace *workspace, enum sway_layout_align align);
 enum sway_layout_align layout_workspace_get_align(struct sway_workspace *workspace);
+uint32_t layout_workspace_get_align_axes(struct sway_workspace *workspace);
+// Sets the new aligned container and its axes of alignment. If the container
+// is already aligned, axes add to the current ones.
+void layout_workspace_set_align_container(struct sway_workspace *workspace,
+		struct sway_container *container, uint32_t axes);
+struct sway_container *layout_workspace_get_align_container(struct sway_workspace *workspace);
+// Should focusing container keep the workspace's current alignment?
+bool layout_alignment_keep(struct sway_workspace *workspace, struct sway_container *container);
 
 // Layout API
 void layout_add_view(struct sway_workspace *workspace, struct sway_container *active, struct sway_container *view);
@@ -329,5 +346,86 @@ void layout_fit_size_workspace(struct sway_workspace *workspace,
 	enum sway_layout_fit_group fit, bool equal);
 void layout_fit_size_container(struct sway_container *container,
 	enum sway_layout_fit_group fit, bool equal);
+
+// Set the fraction of `container` along `axis` and rebalance its siblings
+void layout_fit_set_fraction(struct sway_container *container,
+	enum sway_layout_axis axis, double fraction);
+
+// Layout Coordinate Transforms.
+//
+// Container positions and sizes are stored in unscaled layout coordinates,
+// which are the same as screen coordinates when the workspace is not scaled.
+// Consider A to be the screen anchor (center of the workspace's output area),
+// and C the layout point. If the workspace scale is s, the transform is:
+//
+//           screen = A + s * (layout - C)
+//
+// We keep A and C separate instead of simplifying, so in the future we can
+// add viewport panning.
+struct sway_layout_transform {
+	double scale;
+	double x, y;
+};
+
+double layout_transform_workspace_scale(struct sway_workspace *workspace,
+		bool animated);
+
+// 1.0 if it is full screen or has no workspace/output
+double layout_transform_container_scale(struct sway_container *container,
+		bool animated);
+
+void layout_transform_workspace_get(struct sway_workspace *workspace,
+		bool animated, struct sway_layout_transform *transform);
+
+// Identity if it is full screen or it has no workspace/output
+void layout_transform_container_get(struct sway_container *container,
+		bool animated, struct sway_layout_transform *transform);
+
+static inline double layout_transform_x(const struct sway_layout_transform *t, double x) {
+	return t->scale * x + t->x;
+}
+
+static inline double layout_transform_y(const struct sway_layout_transform *t, double y) {
+	return t->scale * y + t->y;
+}
+
+// Layout to screen
+static inline void layout_transform_point(const struct sway_layout_transform *t,
+		double *x, double *y) {
+	*x = t->scale * *x + t->x;
+	*y = t->scale * *y + t->y;
+}
+
+// Screen to layout
+static inline void layout_transform_point_inv(const struct sway_layout_transform *t,
+		double *x, double *y) {
+	*x = (*x - t->x) / t->scale;
+	*y = (*y - t->y) / t->scale;
+}
+
+static inline void layout_transform_box(const struct sway_layout_transform *t,
+		struct wlr_fbox *box) {
+	layout_transform_point(t, &box->x, &box->y);
+	box->width *= t->scale;
+	box->height *= t->scale;
+}
+
+static inline void layout_transform_box_inv(const struct sway_layout_transform *t,
+		struct wlr_fbox *box) {
+	layout_transform_point_inv(t, &box->x, &box->y);
+	box->width /= t->scale;
+	box->height /= t->scale;
+}
+
+// The workspace box (usable area minus outer gaps) in layout coordinates
+void layout_vp_box(struct sway_workspace *workspace, struct wlr_fbox *box);
+
+// Animated bounding box for the container
+void layout_container_screen_box(struct sway_container *container, bool animated,
+		struct wlr_fbox *box);
+
+// The same, rounded to integer coordinates
+void layout_container_screen_wlr_box(struct sway_container *container,
+		bool animated, struct wlr_box *box);
 
 #endif // _SWAY_LAYOUT_H

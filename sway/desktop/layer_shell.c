@@ -157,6 +157,34 @@ static struct wlr_scene_tree *sway_layer_get_scene(struct sway_output *output,
 	return NULL;
 }
 
+static void layer_surface_init_animation_variables(struct sway_layer_surface *surface) {
+	animated_variable_init(&surface->animation.x, 0.0, ANIMATED_VARIABLE_POSITION);
+	animated_variable_init(&surface->animation.y, 0.0, ANIMATED_VARIABLE_POSITION);
+	animated_variable_init(&surface->animation.w, 0.0, ANIMATED_VARIABLE_SIZE);
+	animated_variable_init(&surface->animation.h, 0.0, ANIMATED_VARIABLE_SIZE);
+}
+
+static void layer_surface_release_animation_variables(struct sway_layer_surface *surface) {
+	animated_variable_release(&surface->animation.x);
+	animated_variable_release(&surface->animation.y);
+	animated_variable_release(&surface->animation.w);
+	animated_variable_release(&surface->animation.h);
+}
+
+static void layer_popup_init_animation_variables(struct sway_layer_popup *popup) {
+	animated_variable_init(&popup->animation.x, 0.0, ANIMATED_VARIABLE_POSITION);
+	animated_variable_init(&popup->animation.y, 0.0, ANIMATED_VARIABLE_POSITION);
+	animated_variable_init(&popup->animation.w, 0.0, ANIMATED_VARIABLE_SIZE);
+	animated_variable_init(&popup->animation.h, 0.0, ANIMATED_VARIABLE_SIZE);
+}
+
+static void layer_popup_release_animation_variables(struct sway_layer_popup *popup) {
+	animated_variable_release(&popup->animation.x);
+	animated_variable_release(&popup->animation.y);
+	animated_variable_release(&popup->animation.w);
+	animated_variable_release(&popup->animation.h);
+}
+
 static struct sway_layer_surface *sway_layer_surface_create(
 		struct wlr_scene_layer_surface_v1 *scene) {
 	struct sway_layer_surface *surface = calloc(1, sizeof(*surface));
@@ -165,10 +193,12 @@ static struct sway_layer_surface *sway_layer_surface_create(
 		return NULL;
 	}
 	node_init(&surface->node, N_LAYER_SURFACE, surface);
+	layer_surface_init_animation_variables(surface);
 
 	struct wlr_scene_tree *popups = wlr_scene_tree_create(root->layers.popup);
 	if (!popups) {
 		sway_log(SWAY_ERROR, "Could not allocate a scene_layer popup node");
+		node_map_remove(&surface->node);
 		free(surface);
 		return NULL;
 	}
@@ -179,6 +209,7 @@ static struct sway_layer_surface *sway_layer_surface_create(
 			SWAY_SCENE_DESC_POPUP, &surface->desc)) {
 		sway_log(SWAY_ERROR, "Failed to allocate a popup scene descriptor");
 		wlr_scene_node_destroy(&popups->node);
+		node_map_remove(&surface->node);
 		free(surface);
 		return NULL;
 	}
@@ -222,6 +253,34 @@ static struct sway_layer_surface *find_mapped_layer_by_client(
 	return NULL;
 }
 
+// Now that Layer shell nodes are included in transactions so they can be
+// animated, we need to make sure their node is not freed until their transaction
+// is destroyed.or they are no longer referenced.
+static bool layer_node_dereference(struct sway_node *node) {
+	// It may still be waiting to be included in the next transaction.
+	if (node->dirty) {
+		int idx = list_find(server.dirty_nodes, node);
+		if (idx >= 0) {
+			list_del(server.dirty_nodes, idx);
+		}
+		node->dirty = false;
+	}
+	node->destroying = true;
+	return node->ntxnrefs == 0;
+}
+
+void layer_surface_destroy(struct sway_layer_surface *surface) {
+	if (!sway_assert(surface->node.destroying,
+				"Tried to free layer surface which wasn't marked as destroying")) {
+		return;
+	}
+	if (!sway_assert(surface->node.ntxnrefs == 0, "Tried to free layer surface "
+				"which is still referenced by transactions")) {
+		return;
+	}
+	free(surface);
+}
+
 static void handle_node_destroy(struct wl_listener *listener, void *data) {
 	struct sway_layer_surface *layer =
 		wl_container_of(listener, layer, node_destroy);
@@ -260,8 +319,11 @@ static void handle_node_destroy(struct wl_listener *listener, void *data) {
 	layer->layer_surface->data = NULL;
 
 	wl_list_remove(&layer->link);
+	layer_surface_release_animation_variables(layer);
 	node_map_remove(&layer->node);
-	free(layer);
+	if (layer_node_dereference(&layer->node)) {
+		free(layer);
+	}
 }
 
 static void handle_surface_commit(struct wl_listener *listener, void *data) {
@@ -286,7 +348,8 @@ static void handle_surface_commit(struct wl_listener *listener, void *data) {
 			animation_set_type(ANIMATION_LAYER_SHELL);
 		}
 		arrange_layers(surface->output);
-		if (committed != (committed & WLR_LAYER_SURFACE_V1_STATE_KEYBOARD_INTERACTIVITY)) {
+		if (committed != (committed & WLR_LAYER_SURFACE_V1_STATE_KEYBOARD_INTERACTIVITY) ||
+			server.dirty_nodes->length > 0) {
 			transaction_commit_dirty();
 		}
 		cursor_rebase_all();
@@ -345,7 +408,22 @@ static void popup_handle_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&popup->new_popup.link);
 	wl_list_remove(&popup->commit.link);
 	wl_list_remove(&popup->reposition.link);
+	layer_popup_release_animation_variables(popup);
 	node_map_remove(&popup->node);
+	if (layer_node_dereference(&popup->node)) {
+		free(popup);
+	}
+}
+
+void layer_popup_destroy(struct sway_layer_popup *popup) {
+	if (!sway_assert(popup->node.destroying,
+				"Tried to free layer popup which wasn't marked as destroying")) {
+		return;
+	}
+	if (!sway_assert(popup->node.ntxnrefs == 0, "Tried to free layer popup "
+				"which is still referenced by transactions")) {
+		return;
+	}
 	free(popup);
 }
 
@@ -409,6 +487,7 @@ static struct sway_layer_popup *create_popup(struct wlr_xdg_popup *wlr_popup,
 		return NULL;
 	}
 	node_init(&popup->node, N_LAYER_POPUP, popup);
+	layer_popup_init_animation_variables(popup);
 
 	popup->toplevel = toplevel;
 	popup->wlr_popup = wlr_popup;
@@ -416,6 +495,7 @@ static struct sway_layer_popup *create_popup(struct wlr_xdg_popup *wlr_popup,
 		wlr_popup->base);
 
 	if (!popup->scene) {
+		node_map_remove(&popup->node);
 		free(popup);
 		return NULL;
 	}

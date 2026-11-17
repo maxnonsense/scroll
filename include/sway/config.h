@@ -567,6 +567,7 @@ struct sway_config {
 	enum focus_follows_mouse_mode focus_follows_mouse;
 	enum mouse_warping_mode mouse_warping;
 	enum focus_wrapping_mode focus_wrapping;
+	bool workspace_switch_wrapping;
 	bool active;
 	bool failed;
 	bool reloading;
@@ -660,6 +661,7 @@ struct sway_config {
 	bool snap_respect_gaps_outer;
 	bool snap_border_overlap;
 	int focus_ring_length;
+	bool focus_ring_wrap;
 	bool gesture_scroll_enable;
 	uint32_t gesture_scroll_fingers;
 	float gesture_scroll_sentitivity;

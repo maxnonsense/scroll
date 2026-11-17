@@ -41,28 +41,24 @@ static void set_parent_x(struct sway_container *parent, double x) {
 	parent->pending.x = x;
 	node_set_dirty(&parent->node);
 	arrange_workspace(parent->pending.workspace);
-	transaction_commit_dirty();
 }
 
 static void set_parent_y(struct sway_container *parent, double y) {
 	parent->pending.y = y;
 	node_set_dirty(&parent->node);
 	arrange_workspace(parent->pending.workspace);
-	transaction_commit_dirty();
 }
 
 static void set_container_x(struct sway_container *container, double x) {
 	container->pending.x = x;
 	node_set_dirty(&container->node);
 	arrange_container(container);
-	transaction_commit_dirty();
 }
 
 static void set_container_y(struct sway_container *container, double y) {
 	container->pending.y = y;
 	node_set_dirty(&container->node);
 	arrange_container(container);
-	transaction_commit_dirty();
 }
 
 struct cmd_results *cmd_align(int argc, char **argv) {
@@ -98,6 +94,7 @@ struct cmd_results *cmd_align(int argc, char **argv) {
 
 	if (strcasecmp(argv[0], "reset") == 0) {
 		layout_workspace_set_align(workspace, ALIGN_NONE);
+		arrange_workspace(workspace);
 		return cmd_results_new(CMD_SUCCESS, NULL);
 	}
 
@@ -109,72 +106,86 @@ struct cmd_results *cmd_align(int argc, char **argv) {
 	enum sway_container_layout layout = layout_get_type(workspace);
 	enum sway_container_layout mode = layout_modifiers_get_mode(workspace);
 	struct sway_container *parent = container->pending.parent ? container->pending.parent : container;
-	float scale = layout_scale_enabled(workspace) ? layout_scale_get(workspace) : 1.0f;
+	struct wlr_fbox vp;
+	layout_vp_box(workspace, &vp);
 	layout_workspace_set_align(workspace, config->align_reset_auto ? ALIGN_AUTO : ALIGN_ALWAYS);
 	int gap = workspace->gaps_inner;
 
+	uint32_t axes;
 	switch (direction) {
 	case DIR_LEFT: {
 		if (layout == L_HORIZ) {
-			set_parent_x(parent, workspace->x + scale * gap);
+			set_parent_x(parent, vp.x + gap);
 		} else {
-			set_container_x(container, workspace->x + scale * gap);
+			set_container_x(container, vp.x + gap);
 		}
+		axes = ALIGN_AXIS_H;
 		break;
 	}
 	case DIR_RIGHT: {
 		if (layout == L_HORIZ) {
-			set_parent_x(parent, workspace->x + workspace->width - scale * (parent->pending.width + gap));
+			set_parent_x(parent, vp.x + vp.width - (parent->pending.width + gap));
 		} else {
-			set_container_x(container, workspace->x + workspace->width - scale * (container->pending.width + gap));
+			set_container_x(container, vp.x + vp.width - (container->pending.width + gap));
 		}
+		axes = ALIGN_AXIS_H;
 		break;
 	}
 	case DIR_CENTER: {
 		if (layout == L_HORIZ) {
 			if (mode == L_HORIZ) {
-				set_parent_x(parent, workspace->x + 0.5 * (workspace->width - scale * parent->pending.width));
+				set_parent_x(parent, vp.x + 0.5 * (vp.width - parent->pending.width));
+				axes = ALIGN_AXIS_H;
 			} else {
-				set_container_y(container, workspace->y + 0.5 * (workspace->height - scale * container->pending.height));
+				set_container_y(container, vp.y + 0.5 * (vp.height - container->pending.height));
+				axes = ALIGN_AXIS_V;
 			}
 		} else {
 			if (mode == L_VERT) {
-				set_parent_y(parent, workspace->y + 0.5 * (workspace->height - scale * parent->pending.height));
+				set_parent_y(parent, vp.y + 0.5 * (vp.height - parent->pending.height));
+				axes = ALIGN_AXIS_V;
 			} else {
-				set_container_x(container, workspace->x + 0.5 * (workspace->width - scale * container->pending.width));
+				set_container_x(container, vp.x + 0.5 * (vp.width - container->pending.width));
+				axes = ALIGN_AXIS_H;
 			}
 		}
 		break;
 	}
 	case DIR_UP: {
 		if (layout == L_HORIZ) {
-			set_container_y(container, workspace->y + scale * gap);
+			set_container_y(container, vp.y + gap);
 		} else {
-			set_parent_y(parent, workspace->y + scale * gap);
+			set_parent_y(parent, vp.y + gap);
 		}
+		axes = ALIGN_AXIS_V;
 		break;
 	}
 	case DIR_DOWN: {
 		if (layout == L_HORIZ) {
-			set_container_y(container, workspace->y + workspace->height - scale * (container->pending.height + gap));
+			set_container_y(container, vp.y + vp.height - (container->pending.height + gap));
 		} else {
-			set_parent_y(parent, workspace->y + workspace->height - scale * (parent->pending.height + gap));
+			set_parent_y(parent, vp.y + vp.height - (parent->pending.height + gap));
 		}
+		axes = ALIGN_AXIS_V;
 		break;
 	}
 	case DIR_MIDDLE: {
 		if (layout == L_HORIZ) {
-			set_parent_x(parent, workspace->x + 0.5 * (workspace->width - scale * parent->pending.width));
-			set_container_y(container, workspace->y + 0.5 * (workspace->height - scale * container->pending.height));
+			set_parent_x(parent, vp.x + 0.5 * (vp.width - parent->pending.width));
+			set_container_y(container, vp.y + 0.5 * (vp.height - container->pending.height));
 		} else {
-			set_parent_y(parent, workspace->y + 0.5 * (workspace->height - scale * parent->pending.height));
-			set_container_x(container, workspace->x + 0.5 * (workspace->width - scale * container->pending.width));
+			set_parent_y(parent, vp.y + 0.5 * (vp.height - parent->pending.height));
+			set_container_x(container, vp.x + 0.5 * (vp.width - container->pending.width));
 		}
+		axes = ALIGN_AXIS_H | ALIGN_AXIS_V;
 		break;
 	}
 	default:
+		// We shouldn't be here if parsing was correct
+		axes = ALIGN_AXIS_NONE;
 		break;
 	}
 
+	layout_workspace_set_align_container(workspace, container, axes);
 	return cmd_results_new(CMD_SUCCESS, NULL);
 }

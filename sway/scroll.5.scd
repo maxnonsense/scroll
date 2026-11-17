@@ -62,8 +62,8 @@ The following commands may only be used in the configuration file.
 
 *align_reset_auto* <true|false>
 	The default value is _true_. If _true_, alignment is reset when changing
-	focus to a window outside of the viewport. If _false_, alignment can only
-	be reset through *align reset*.
+	focus to a new window breaks the current alignment. If _false_, alignment
+	can only be reset through *align reset*.
 
 *animations* <animations-subcommands...>
 	Subcommands are:
@@ -125,16 +125,13 @@ The following commands may only be used in the configuration file.
 
 	*fade_in* enabled [duration] [var animation curve] [off animation curve]
 	Default is not defined, so it uses _default_ unless you set one up in your
-	config. It is the curve used to animate the opacity of a new window while
-	the *window_open* animation is happening, and only if it is enabled.
-	_duration_ will be ignored and assumed the same as the *window_open*
-	animation's.
+	config. It is the curve used to animate an increase in opacity, also including
+	that of a new window while the *window_open* animation is happening.
 
 	*fade_out* enabled [duration] [var animation curve] [off animation curve]
 	Default is not defined, so it uses _default_ unless you set one up in your
-	config. It is the curve used to animate the opacity of a closing window.
-	_duration_ will be ignored and assumed the same as the *default*
-	animation's.
+	config. It is the curve used to animate a decrease in opacity, also used
+	when a window is closing.
 
 	Format of an animation curve:
 
@@ -211,6 +208,12 @@ The following commands may only be used in the configuration file.
 *focus_ring_length* <number>
 	Sets the length of the focus ring. The default value is _0_, which means
 	every window will be included. Values over _0_ set the length of the ring.
+
+*focus_ring_wrap* <true|false>
+	Enables wrapping the in the *focus_ring* command. Calling *focus_ring next*
+	on the last window of the ring focuses the first one, and calling
+	*focus_ring prev* on the first window focuses the last one.
+	Default value is _false_.
 
 *fullscreen_movefocus* <true|false> [follow|nofollow]
 	Default value is _true_ and _nofollow_.
@@ -303,6 +306,7 @@ The following commands may only be used in the configuration file.
 	arguments and meaning.
 
 	Default is _reorder_auto_ _after_ _focus_ _nocenter_horiz_ _nocenter_vert_
+	_nofloating_
 	and the mode will be given by the type of layout assigned to the output,
 	or its landscape/portrait configuration if none was assigned.
 
@@ -421,7 +425,7 @@ They are expected to be used with *bindsym* or at runtime through *scrollmsg*(1)
 	go back to automatic mode, you need to call _align_ reset.
 
 	See *align_reset_auto* for a configuration command to also reset alignment
-	when changing focus to a window outside of the viewport.
+	when changing focus to a new window would break the current alignment.
 
 	You can also center a window on your workspace using _middle_, it will
 	center its column, and also the window within the column.
@@ -480,6 +484,9 @@ They are expected to be used with *bindsym* or at runtime through *scrollmsg*(1)
 	_trilmark_ filters all the windows that are trailmarked in the current trail.
 	_visible_ shows only those windows that are completely visible.
 
+	Windows fade in or out when they become visible or hidden by a filter,
+	using the _fade_in_ and _fade_out_ animations.
+
 *fit_size* <h|v> <active|visible|all|toend|tobeg> <proportional|equal>
 	Allows re-fitting the columns (horizontal mode) or windows (vertical mode)
 	you want to the screen extents. It accepts an argument related to the
@@ -518,10 +525,13 @@ They are expected to be used with *bindsym* or at runtime through *scrollmsg*(1)
 	Moves focus to the parent of the focused container.
 
 *focus* output up|right|down|left
-	Moves focus to the next output in the specified direction.
+	Moves focus to the next output in the specified direction. When the
+	physical output is split into virtual outputs, a virtual output in that
+	direction takes precedence over another physical output.
 
 *focus* output <name>
-	Moves focus to the named output.
+	Moves focus to the named output. A virtual output can also be addressed
+	by its name.
 
 *focus* tiling
 	Sets focus to the last focused tiling container.
@@ -534,9 +544,10 @@ They are expected to be used with *bindsym* or at runtime through *scrollmsg*(1)
 
 *focus_ring* prev|next|first|last|set|remove
 	Navigate the focus ring. The focus ring stores windows in creation order.
-	You can manipulate the focus ring, changing the order or windows or removing
+	You can manipulate the focus ring, changing the order of windows or removing
 	them from the list. See *focus_ring_length* for an option to control the
-	size of the focus ring.
+	size of the focus ring and *focus_ring_wrap* to wrap around its ends when
+	navigating with _prev_ and _next_.
 
 	_prev_: focus the previous view in the focus ring.
 
@@ -746,9 +757,13 @@ set|plus|minus|toggle <amount>
 
 *move* workspace [to] output up|right|down|left
 	Moves the focused workspace to next output in the specified direction.
+	If the physical output is split, the workspace is moved to the virtual
+	output in that direction instead.
 
 *move* workspace to [output] up|right|down|left
 	Moves the focused workspace to next output in the specified direction.
+	If the physical output is split, the workspace is moved to the virtual
+	output in that direction instead.
 
 *nop* <comment>
 	A no operation command that can be used to override default behaviour. The
@@ -854,11 +869,12 @@ set|plus|minus|toggle <amount>
 	to see where things are and move the active focus, or reposition windows.
 
 *scale_workspaces* enable|disable|toggle
-	This command will smoothly zoom out each output, showing its workspaces
-	as a vertical strip centered on the focused workspace, with parts of the
-	neighboring workspaces visible above and below. As in *scale_workspace*,
-	you will be able to interact with the windows normally. The overview
-	re-centers when the focused workspace changes.
+	This command will smoothly zoom out each output (or virtual output),
+	showing its workspaces as a vertical strip centered on the focused
+	workspace, with parts of the neighboring workspaces visible above and
+	below. As in *scale_workspace*, you will be able to interact with the
+	windows normally. The overview re-centers when the focused workspace
+	changes.
 
 *scale_workspaces_labels* yes|no
 	Show the name of each workspace above it while in the *scale_workspaces*
@@ -925,7 +941,7 @@ set|plus|minus|toggle <amount>
 *set_mode* [<h|v|t> <after|before|end|beg> <nofit|fitsplit|fitfraction>
 <focus|nofocus>
 <center_horiz|nocenter_horiz> <center_vert|nocenter_vert>
-<reorder_auto|noreorder_auto>]
+<reorder_auto|noreorder_auto> <floating|nofloating>]
 	Modes and mode modifiers are per workspace.
 	At window creation time, scroll can apply several modifiers to the current
 	working mode (h/v). It supports extra arguments:
@@ -961,6 +977,14 @@ set|plus|minus|toggle <amount>
 
 	_center_vert/nocenter_vert_: It will keep the active window centered
 	(or not) in its column.
+
+	_floating_/nofloating_: floating windows mode, nofloating (default) or
+	floating. When floating is set, any window that gets mapped in this
+	workspace will be placed as a floating window instead of being tiled.
+	It only affects new windows, existing ones are left where they are, and
+	you can send any window back to the tiling layout with *floating disable*.
+	_for_window_ criteria are applied after this modifier, so they can still
+	send the window to tiling mode in a floating workspace.
 
 	You can skip any number of parameters when calling the command, and
 	their order doesn't matter.
@@ -1213,6 +1237,29 @@ runtime.
 ```
 		# Execute firefox when alt, shift, and f are pressed together
 		bindsym Mod1+Shift+f exec firefox
+```
+	Note:
+
+	scroll treats the _--release_ flag differently than sway. In sway, releasing
+	the main key triggers the binding, while in scroll you need to release the
+	main key and modifiers, in any order, for the binding to activate. This
+	lets you do things like in the following example. You press $mod+tab to
+	enter overview mode. Then you can release tab and use the arrow keys to
+	navigate windows, and as soon as you release the $mod key, you exit
+	overview mode.
+
+```
+	mode "overview" {
+		bindsym --release $mod scale_workspace overview; mode "default"
+
+		bindsym --no-repeat $mod+left focus left
+		bindsym --no-repeat $mod+down focus down
+		bindsym --no-repeat $mod+up focus up
+		bindsym --no-repeat $mod+right focus right
+		bindsym --no-repeat $mod+home focus beginning
+		bindsym --no-repeat $mod+end focus end
+	}
+	bindsym --no-repeat $mod+tab scale_workspace overview; mode "overview"
 ```
 
 *bindcode* [--whole-window] [--border] [--exclude-titlebar] [--release] \
@@ -1765,6 +1812,25 @@ The default colors are:
 	state. Using _allow_ or _deny_ controls the window's ability to set itself
 	as urgent. By default, windows are allowed to set their own urgency.
 
+*virtual_output* split [h|v|reset] [<fraction>] [<gap>]
+	Splits the virtual output containing the focused workspace horizontally
+	(_h_) or vertically (_v_), creating a new virtual output with its own
+	workspace. The original virtual output retains a _fraction_ (0.1-0.9) of
+	the total size, leaving an empty gap of integer _gap_ pixels between the
+	two virtual outputs. Each virtual output has its own list of workspaces and
+	its own independent layout. A virtual output can be split again, so a
+	physical output may contain any number of virtual outputs whose combined
+	area is the area of the physical output.
+
+	_reset_ undoes the split containing the current virtual output, moving the
+	workspaces of the removed virtual outputs into the surviving one.
+
+*virtual_output* toggle
+	Maximizes/restores the virtual output. When enabled, the active virtual
+	output takes the whole physical output, making the other virtual outputs
+	invisible. Focusing a workspace of a different virtual output makes that
+	virtual output the active one.
+
 *workspace* [--no-auto-back-and-forth] [number] <[num:]name>
 	Switches to the specified workspace. The _num:_ portion of the name is
 	optional and will be used for ordering. If _num:_ is not given and
@@ -1784,7 +1850,12 @@ The default colors are:
 	if currently on the last workspace.
 
 *workspace* prev_on_output|next_on_output
-	Switches to the next workspace on the current output.
+	Switches to the next workspace on the current output. Virtual outputs are
+	treated like real outputs.
+
+*workspace_switch_wrapping* yes|no
+	When switching to next/previous workspace, wrap around when reaching
+	the first or last workspace on the current output. Defaults is _yes_.
 
 *workspace* back_and_forth
 	Switches to the previously focused workspace.
@@ -1819,6 +1890,7 @@ The default colors are:
 	affects that ourput's workspaces.
 
 	Default is _reorder_auto_ _after_ _focus_ _nocenter_horiz_ _nocenter_vert_
+	_nofloating_
 	and the mode will be given by the type of layout assigned to the output,
 	or its landscape/portrait configuration if none was assigned.
 
@@ -1866,8 +1938,8 @@ scroll.add_callback("workspace_create", on_create_ws, nil)
 set $lua_scripts /home/xxxx/.config/scroll/scripts
 
 # Examples
-# split workspace 1 as soon as it gets created
-lua $lua_scripts/workspace_exec.lua 1 workspace split v 0.5
+# split the virtual output of workspace 1 as soon as it gets created
+lua $lua_scripts/workspace_exec.lua 1 virtual_output split v 0.5
 # open a kitty terminal every time terminal 1 is created
 lua $lua_scripts/workspace_exec.lua 1 exec kitty
 ```
@@ -1878,19 +1950,6 @@ lua $lua_scripts/workspace_exec.lua 1 exec kitty
 	workspace names are swapped, leaving the containers where they are. This is
 	useful if you just want to re-organize your workspace names. See the
 	*rename* command if you just want to rename a workspace.
-
-*workspace* split [h|v|reset] [<fraction>] [<gap>]
-	Splits the current workspace horizontally (_h_) or vertically (_v_), and the
-	original workspace retains a _fraction_ (0.1-0.9) of the total size, leaving
-	an empty gap of integer _gap_ pixels between the two new workspaces.
-	The two workspaces have independent layouts.
-	A workspace can only be split once, so there can only be at most two visible
-	workspaces per output.
-	_reset_ undoes the split, making each of the workspaces use the full output
-	again.
-	If you call the command on an already split workspace, it will apply the
-	new parameters, also setting the active workspace 'left' (if _v_) or 'top'
-	(if _h_ splitting).
 
 *workspace_auto_back_and_forth* yes|no
 	When _yes_, repeating a workspace switch command will switch back to the
@@ -2191,10 +2250,16 @@ This is the current supported API:
 *animations_set_enabled(enable)*
 	Enable/Disable animations if _enable_ is _true_/_false_.
 
-*command(container|workspace|nil, command)*
+*command(container|workspace|nil, command, [opts])*
 	Execute a scroll _command_ with _container_ or _workspace_ as its context.
-	If the first parameter is _nil_, use the default context, usually the
+	If the first argument is _nil_, use the default context, usually the
 	focused container or workspace. Returns all the results/errors in an array.
+
+	_opts_: optional table argument with extra options for the command:
+
+	_opts.commit_: boolean, default _true_. Decides whether to commit the
+		command transaction immediately. It is safer, but it will first end
+		the previous, ongoing animation.
 
 ```
 scroll.command(nil, "set_size v 0.33333333; move left nomode")
@@ -2219,6 +2284,11 @@ local process_data = scroll.exec_process("kitty")
 
 *focused_container()*
 	Returns the focused container ID or nil if none
+
+*context_container()*
+	Returns the container ID of the execution context if the command/script
+	was run via criteria (e.g. `[class="XTerm"] lua script.lua`), or nil if
+	there is no context (run globally).
 
 *focused_workspace()*
 	Returns the focused workspace ID or nil if none
@@ -2313,14 +2383,19 @@ local process_data = scroll.exec_process("kitty")
 	The keys of that table are "x", "y", "width" and "height", and the values
 	are floating point numbers.
 
-
 *container_get_animated_geometry(container)*
-	Returns a table with the _container_'s animated geometry (in layout coordinates),
-	or *nil* if the container is invalid.
-	This reflects the current animated position and size if an animation is running.
-	The keys of that table are "x", "y", "width" and "height", and the values
-	are floating point numbers.
+	Returns a table with the _container_'s animated geometry (in layout
+	coordinates), or *nil* if the container is invalid.
+	This reflects the current animated position and size if an animation is
+	running. The keys of that table are "x", "y", "width" and "height", and the
+	values are floating point numbers.
 
+*container_get_animated_values(container)*
+	Returns a table with the _container_'s animated variable values, or *nil*
+	if the container is invalid.
+	This reflects the current animated position and size if an animation is
+	running. The keys of that table are "x", "y", "width", "height" (floating
+	point values), and "animating" if the variable is currently animating.
 
 *container_get_fullscreen_mode(container)*
 	Returns a string with the _fullscreen_ state for _container_. Values can be
@@ -2393,6 +2468,8 @@ local process_data = scroll.exec_process("kitty")
 
 	_center_vertical_: true|false
 
+	_floating_: true|false
+
 *workspace_set_mode(workspace, modifiers)*
 	Sets the mode _modifiers_ for _workspace_. The _modifiers_ table can
 	override any number of modifiers. The keys and values that table can include
@@ -2410,6 +2487,8 @@ local process_data = scroll.exec_process("kitty")
 
 	_center_vertical_: true|false
 
+	_floating_: true|false
+
 *workspace_get_layout_type(workspace)*
 	Returns the layout type, _"horizontal"_ or _"vertical"_.
 
@@ -2426,18 +2505,6 @@ local process_data = scroll.exec_process("kitty")
 *workspace_get_pin(workspace)*
 	Returns the _workspace's_ pinned container ID, or nil if none.
 
-*workspace_get_split(workspace)*
-	Returns a table with the split state for _workspace_. The
-	keys and values of that table are:
-
-	_split_: "none"|"top"|"bottom"|"left"|"right"
-
-	_fraction_: number
-
-	_gap_: integer number
-
-	_sibling_: the sibling workspace's ID
-
 *workspace_get_output(workspace)*
 	Returns the _workspace's_ output ID, or nil if none.
 
@@ -2452,6 +2519,35 @@ local process_data = scroll.exec_process("kitty")
 
 *output_get_workspaces(output)*
 	Returns an array with all the existing workspaces assigned to _output_.
+
+*output_get_virtual_outputs(output)*
+	Returns an array with a table describing every virtual output of _output_.
+	The internal nodes of the split tree, which only describe a split and hold
+	no workspaces, are not included. An invalid _output_, or an output without
+	virtual outputs, returns an empty array. The keys and values of each table
+	are:
+
+	_name_: the virtual output's name
+
+	_visible_: true if the virtual output is currently visible
+
+	_active_: true if this is the active virtual output of _output_
+
+	_rect_: effective geometry, a table with _x_, _y_, _width_ and _height_
+	fields in layout coordinates. When the physical output is maximized, the
+	active virtual output covers the whole physical output
+
+	_split_rect_: the same geometry without the maximize override
+
+	_usable_rect_: the virtual output's usable area
+
+	_workspaces_: an array with the IDs of its workspaces
+
+	_workspace_names_: an array with the names of its workspaces
+
+	_active_workspace_: the ID of its active workspace, or nil
+
+	_maximized_: true when _maximize_virtual_output_ is enabled on _output_
 
 *root_get_outputs()*
 	Returns an array with all the outputs (displays).

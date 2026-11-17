@@ -14,8 +14,10 @@
 #include "sway/server.h"
 #include "sway/tree/arrange.h"
 #include "sway/tree/container.h"
+#include "sway/tree/layout.h"
 #include "sway/tree/root.h"
 #include "sway/tree/workspace.h"
+#include "sway/tree/virtual_output.h"
 #include "stringop.h"
 #include "list.h"
 #include "sway/log.h"
@@ -27,6 +29,26 @@ static const char expected_syntax[] =
 	"'move [--no-auto-back-and-forth] <container|window> [to] workspace <name>' or "
 	"'move <container|window|workspace> [to] output <name|direction>' or "
 	"'move <container|window> [to] mark <mark>'";
+
+static struct sway_virtual_output *virtual_output_in_direction(
+		const char *direction_string, struct sway_virtual_output *reference) {
+	struct {
+		const char *name;
+		enum wlr_direction direction;
+	} names[] = {
+		{ "up", WLR_DIRECTION_UP },
+		{ "down", WLR_DIRECTION_DOWN },
+		{ "left", WLR_DIRECTION_LEFT },
+		{ "right", WLR_DIRECTION_RIGHT },
+	};
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+		if (strcasecmp(names[i].name, direction_string) == 0) {
+			return reference ? virtual_output_get_in_direction(reference,
+					names[i].direction) : NULL;
+		}
+	}
+	return virtual_output_by_name(direction_string);
+}
 
 static struct sway_output *output_in_direction(const char *direction_string,
 		struct sway_output *reference, int ref_lx, int ref_ly) {
@@ -112,13 +134,14 @@ static void container_move_to_workspace(struct sway_container *container,
 		container_handle_fullscreen_reparent(container);
 		// If changing output, adjust the coordinates of the window.
 		if (old_output != workspace->output && !container->pending.fullscreen_mode) {
-			struct wlr_box workspace_box, old_workspace_box;
-			workspace_get_box(workspace, &workspace_box);
-			workspace_get_box(old_workspace, &old_workspace_box);
-			floating_fix_coordinates(container, &old_workspace_box, &workspace_box);
+			// What each workspace shows, in its layout coordinates
+			struct wlr_fbox vp, old_vp;
+			layout_vp_box(workspace, &vp);
+			layout_vp_box(old_workspace, &old_vp);
+			floating_fix_coordinates(container, &old_vp, &vp);
 			if (container->scratchpad && workspace->output) {
-				struct wlr_box output_box;
-				output_get_box(workspace->output, &output_box);
+				struct wlr_box workspace_box;
+				workspace_get_box(workspace, &workspace_box);
 				container->transform = workspace_box;
 			}
 		}
@@ -287,13 +310,24 @@ static struct cmd_results *cmd_move_container(bool no_auto_back_and_forth,
 		free(ws_name);
 		destination = &ws->node;
 	} else if (strcasecmp(argv[0], "output") == 0) {
-		struct sway_output *new_output = output_in_direction(argv[1],
-				old_output, container->pending.x, container->pending.y);
-		if (!new_output) {
-			return cmd_results_new(CMD_FAILURE,
-				"Can't find output with name/direction '%s'", argv[1]);
+		struct sway_virtual_output *vo = virtual_output_in_direction(argv[1],
+				old_ws ? old_ws->virtual_output : NULL);
+		if (vo) {
+			struct sway_workspace *target_ws =
+				virtual_output_get_active_workspace(vo);
+			if (target_ws) {
+				destination = &target_ws->node;
+			}
 		}
-		destination = &new_output->current.active_workspace->node;
+		if (!destination) {
+			struct sway_output *new_output = output_in_direction(argv[1],
+					old_output, container->pending.x, container->pending.y);
+			if (!new_output || !new_output->current.active_workspace) {
+				return cmd_results_new(CMD_FAILURE,
+					"Can't find output with name/direction '%s'", argv[1]);
+			}
+			destination = &new_output->current.active_workspace->node;
+		}
 	} else if (strcasecmp(argv[0], "mark") == 0) {
 		struct sway_container *dest_con = container_find_mark(argv[1]);
 		if (dest_con == NULL) {
@@ -422,18 +456,30 @@ static struct cmd_results *cmd_move_workspace(int argc, char **argv) {
 	}
 
 	struct sway_output *old_output = workspace->output;
-	int center_x = workspace->width / 2 + workspace->x,
-		center_y = workspace->height / 2 + workspace->y;
-	struct sway_output *new_output = output_in_direction(argv[0],
-			old_output, center_x, center_y);
-	if (!new_output) {
-		return cmd_results_new(CMD_FAILURE,
-			"Can't find output with name/direction '%s'", argv[0]);
+	struct sway_virtual_output *target_vo = virtual_output_in_direction(argv[0],
+			workspace->virtual_output);
+	if (target_vo && target_vo == workspace->virtual_output) {
+		// Already there.
+		return cmd_results_new(CMD_SUCCESS, NULL);
 	}
-	workspace_move_to_output(workspace, new_output);
+	if (target_vo) {
+		// Moving a workspace to a virtual output of the same physical output
+		workspace_move_to_virtual_output(workspace, target_vo);
+		arrange_output(old_output);
+	} else {
+		int center_x = workspace->width / 2 + workspace->x,
+			center_y = workspace->height / 2 + workspace->y;
+		struct sway_output *new_output = output_in_direction(argv[0],
+				old_output, center_x, center_y);
+		if (!new_output) {
+			return cmd_results_new(CMD_FAILURE,
+				"Can't find output with name/direction '%s'", argv[0]);
+		}
+		workspace_move_to_output(workspace, new_output);
 
-	arrange_output(old_output);
-	arrange_output(new_output);
+		arrange_output(old_output);
+		arrange_output(new_output);
+	}
 
 	struct sway_seat *seat = config->handler_context.seat;
 	struct sway_node *focus = seat_get_focus_inactive(seat, &workspace->node);

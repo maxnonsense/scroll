@@ -125,7 +125,7 @@ void free_config(struct sway_config *config) {
 		}
 		list_free(config->bars);
 	}
-	list_free(config->cmd_queue);
+	list_free_items_and_destroy(config->cmd_queue);
 	if (config->workspace_configs) {
 		for (int i = 0; i < config->workspace_configs->length; i++) {
 			free_workspace_config(config->workspace_configs->items[i]);
@@ -307,6 +307,7 @@ static void config_defaults(struct sway_config *config) {
 	config->snap_respect_gaps_outer = false;
 	config->snap_border_overlap = false;
 	config->focus_ring_length = 0;
+	config->focus_ring_wrap = false;
 	config->gesture_scroll_enable = true;
 	config->gesture_scroll_fingers = 3;
 	config->gesture_scroll_sentitivity = 1.0f;
@@ -378,6 +379,7 @@ static void config_defaults(struct sway_config *config) {
 	config->focus_follows_mouse = FOLLOWS_YES;
 	config->mouse_warping = WARP_OUTPUT;
 	config->focus_wrapping = WRAP_NO;
+	config->workspace_switch_wrapping = true;
 	config->validating = false;
 	config->reloading = false;
 	config->active = false;
