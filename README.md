@@ -973,31 +973,6 @@ interact with the windows normally.
 the overview (default `yes`), and `scale_workspaces_gap <px>` sets the gap in
 pixels between the workspaces (computed automatically by default).
 
-### GPU sync workarounds (Adreno/kgsl and similar)
-
-On drivers without dma-buf implicit sync (e.g. Freedreno on the kgsl kernel
-driver), this fork always redraws full frames and uses `glFinish` at the end
-of each render pass, which fixes flashing horizontal lines caused by the
-display controller scanning out buffers the GPU is still writing.
-
-Client buffers have the same race: the compositor can sample a client
-dma-buf before the client's GPU finished rendering into it. Freshly
-allocated buffers are zero-filled and clients usually clear to transparent
-at the start of every frame, so an early sample makes the window flash
-transparent for a frame. Two workarounds keep the previous frame on screen
-while the client's GPU finishes:
-
-- `WLR_SCENE_DELAY_NEW_BUFFERS=<ms>` (e.g. `15`) delays only the first
-  presentation of each newly-seen client dma-buf. Reused buffers are
-  presented immediately, so steady-state latency is unaffected, but a
-  mid-render sample of a reused buffer can still flash.
-- `WLR_SCENE_DELAY_BUFFERS=<ms>` delays every dma-buf commit instead, which
-  also covers reused buffers at the cost of that much extra latency for
-  GPU-rendered clients (15 ms caps client updates at ~66 fps). It takes
-  precedence over `WLR_SCENE_DELAY_NEW_BUFFERS`.
-
-Surfaces using explicit sync and shm buffers are never delayed.
-
 ### Hot corners
 
 `hot_corner <top_left|top_right|bottom_left|bottom_right> <command|none>`

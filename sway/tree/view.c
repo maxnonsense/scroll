@@ -1482,9 +1482,6 @@ static void view_save_buffer_iterator(struct wlr_scene_buffer *buffer,
 	wlr_scene_buffer_set_source_box(sbuf, &buffer->src_box);
 	wlr_scene_node_set_position(&sbuf->node, sx, sy);
 	wlr_scene_buffer_set_transform(sbuf, buffer->transform);
-	if (buffer->buffer == NULL) {
-		sway_log(SWAY_ERROR, "TRIPWIRE: saving view %p buffer with NULL source buffer", (void *)view);
-	}
 	wlr_scene_buffer_set_buffer(sbuf, buffer->buffer);
 }
 

@@ -57,12 +57,7 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 			goto out;
 		}
 	} else {
-		// Wait for the GPU to finish rendering before handing the buffer
-		// over. Without explicit sync there is no fence the consumer could
-		// wait on, and on some drivers (e.g. Adreno/kgsl) there is no
-		// implicit dma-buf sync either, so the display controller could
-		// scan out a buffer the GPU is still writing to.
-		glFinish();
+		glFlush();
 	}
 
 	ok = true;
